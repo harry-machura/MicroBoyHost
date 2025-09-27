@@ -12,6 +12,7 @@ namespace MicroBoyCart.Sample
 
         // --- Spielfeld-Setup ---
         const int TILE_W = 8, TILE_H = 8;
+        const int GlyphWidth = 4, GlyphHeight = 5;
 
         const byte TILE_GRASS_ID = 0;
         const byte TILE_PATH_ID = 1;
@@ -40,6 +41,10 @@ namespace MicroBoyCart.Sample
         string currentMapId = string.Empty;
         WarpPoint? pendingWarp;
         bool hasSurfAbility;
+        Buttons previousButtons;
+
+        bool isDialogOpen;
+        string[] activeDialogLines = Array.Empty<string>();
 
         public void Init()
         {
@@ -47,6 +52,9 @@ namespace MicroBoyCart.Sample
             currentMap = Maps[currentMapId];
             pendingWarp = null;
             hasSurfAbility = false;
+            previousButtons = Buttons.None;
+            isDialogOpen = false;
+            activeDialogLines = Array.Empty<string>();
 
             pTileX = 5;
             pTileY = 10;
@@ -60,8 +68,20 @@ namespace MicroBoyCart.Sample
 
         public void Update(Input input, double dt)
         {
-            if (input.IsDown(Buttons.A))
-                hasSurfAbility = true; // Debug: A schaltet Surf-Fähigkeit frei
+            Buttons buttons = input.Buttons;
+            bool pressedA = input.IsDown(Buttons.A) && (previousButtons & Buttons.A) == 0;
+            bool pressedB = input.IsDown(Buttons.B) && (previousButtons & Buttons.B) == 0;
+
+            if (pressedB && isDialogOpen)
+            {
+                CloseDialog();
+            }
+
+            if (isDialogOpen)
+            {
+                previousButtons = buttons;
+                return;
+            }
 
             // Falls wir gerade unterwegs sind -> zum Ziel gleiten
             if (isMoving)
@@ -84,7 +104,21 @@ namespace MicroBoyCart.Sample
                         ExecuteWarp(warp2);
                     }
                 }
+
+                previousButtons = buttons;
                 return;
+            }
+
+            if (pressedA && TryGetFacingNpc(out var facingNpc))
+            {
+                OpenDialog(facingNpc);
+                previousButtons = buttons;
+                return;
+            }
+
+            if (pressedA)
+            {
+                hasSurfAbility = true; // Debug: A schaltet Surf-Fähigkeit frei
             }
 
             // Keine Bewegung aktiv -> Eingaben im Grid prüfen (tileweise)
@@ -93,7 +127,11 @@ namespace MicroBoyCart.Sample
             else if (input.IsDown(Buttons.Right)) { nx = pTileX + 1; dir = 2; }
             else if (input.IsDown(Buttons.Up)) { ny = pTileY - 1; dir = 3; }
             else if (input.IsDown(Buttons.Down)) { ny = pTileY + 1; dir = 0; }
-            else return; // keine Richtung gedrückt
+            else
+            {
+                previousButtons = buttons;
+                return; // keine Richtung gedrückt
+            }
 
             if (IsWalkable(nx, ny, out var warp))
             {
@@ -107,6 +145,8 @@ namespace MicroBoyCart.Sample
             {
                 pendingWarp = null;
             }
+
+            previousButtons = buttons;
         }
 
         bool IsWalkable(int tx, int ty, out WarpPoint warp)
@@ -114,6 +154,9 @@ namespace MicroBoyCart.Sample
             warp = WarpPoint.None;
             if (currentMap is null) return false;
             if (tx < 0 || ty < 0 || tx >= currentMap.Width || ty >= currentMap.Height) return false;
+
+            if (currentMap.TryGetNpc(tx, ty, out _))
+                return false;
 
             byte overlayId = currentMap.GetOverlay(tx, ty);
             if (overlayId != TILE_NONE)
@@ -153,6 +196,44 @@ namespace MicroBoyCart.Sample
                 default:
                     return true;
             }
+        }
+
+        bool TryGetFacingNpc(out NpcDefinition npc)
+        {
+            npc = default;
+            if (currentMap is null) return false;
+
+            int tx = pTileX;
+            int ty = pTileY;
+            (int dx, int dy) = dir switch
+            {
+                1 => (-1, 0), // links
+                2 => (1, 0),  // rechts
+                3 => (0, -1), // oben
+                _ => (0, 1),  // unten
+            };
+
+            tx += dx;
+            ty += dy;
+            if (tx < 0 || ty < 0 || currentMap.Width <= tx || currentMap.Height <= ty)
+                return false;
+
+            return currentMap.TryGetNpc(tx, ty, out npc) && npc.HasDialog;
+        }
+
+        void OpenDialog(NpcDefinition npc)
+        {
+            if (!npc.HasDialog)
+                return;
+
+            isDialogOpen = true;
+            activeDialogLines = npc.DialogLines;
+        }
+
+        void CloseDialog()
+        {
+            isDialogOpen = false;
+            activeDialogLines = Array.Empty<string>();
         }
 
         void ExecuteWarp(WarpPoint warp)
@@ -214,8 +295,18 @@ namespace MicroBoyCart.Sample
                 }
             }
 
+            foreach (var npc in currentMap.Npcs)
+            {
+                DrawNpc(frame, npc, camX, camY);
+            }
+
             // Spieler (8x8) zeichnen – einfache 2-Frame „Animation“
             DrawPlayer(frame, px - camX, py - camY);
+
+            if (isDialogOpen && activeDialogLines.Length > 0)
+            {
+                DrawDialogBox(frame, activeDialogLines);
+            }
         }
 
         // --- Tileset: mehrere Tiles in 4 Farben (0..3) ---
@@ -328,6 +419,32 @@ namespace MicroBoyCart.Sample
             {0,3,3,3,3,3,3,0},
         };
 
+        static readonly byte[,] NPC_LASS =
+        {
+            {0,0,2,2,2,2,0,0},
+            {0,2,3,3,3,3,2,0},
+            {2,3,1,3,3,1,3,2},
+            {2,3,3,3,3,3,3,2},
+            {0,2,3,3,3,3,2,0},
+            {0,2,3,3,3,3,2,0},
+            {0,2,3,0,0,3,2,0},
+            {0,0,2,2,2,2,0,0},
+        };
+
+        static readonly byte[,] NPC_ELDER =
+        {
+            {0,0,3,3,3,3,0,0},
+            {0,3,1,1,1,1,3,0},
+            {3,1,3,3,3,3,1,3},
+            {3,1,3,3,3,3,1,3},
+            {0,3,3,3,3,3,3,0},
+            {0,3,2,3,3,2,3,0},
+            {0,3,2,2,2,2,3,0},
+            {0,0,3,3,3,3,0,0},
+        };
+
+        static readonly Dictionary<char, byte[,]> FontGlyphs = BuildFont();
+
         void BlitTile(Span<byte> fb, int dx, int dy, byte baseId, byte overlayId)
         {
             DrawTileLayer(fb, dx, dy, baseId, transparent: false);
@@ -348,6 +465,132 @@ namespace MicroBoyCart.Sample
                     byte c = tile[y, x];
                     if (transparent && c == 0) continue;
                     fb[row + rx] = c;
+                }
+            }
+        }
+
+        void DrawNpc(Span<byte> fb, NpcDefinition npc, int camX, int camY)
+        {
+            var sprite = npc.Sprite;
+            int spriteH = sprite.GetLength(0);
+            int spriteW = sprite.GetLength(1);
+            int baseX = npc.TileX * TILE_W - camX;
+            int baseY = npc.TileY * TILE_H - camY;
+
+            for (int y = 0; y < spriteH; y++)
+            {
+                int ry = baseY + y; if ((uint)ry >= MicroBoySpec.H) continue;
+                int row = ry * MicroBoySpec.W;
+                for (int x = 0; x < spriteW; x++)
+                {
+                    int rx = baseX + x; if ((uint)rx >= MicroBoySpec.W) continue;
+                    byte c = sprite[y, x];
+                    if (c != 0) fb[row + rx] = c;
+                }
+            }
+        }
+
+        void DrawDialogBox(Span<byte> fb, IReadOnlyList<string> lines)
+        {
+            if (lines.Count == 0) return;
+
+            int maxLen = 0;
+            foreach (var line in lines)
+            {
+                if (line.Length > maxLen)
+                    maxLen = line.Length;
+            }
+
+            int contentWidth = maxLen > 0 ? maxLen * (GlyphWidth + 1) - 1 : 0;
+            int contentHeight = lines.Count * GlyphHeight + Math.Max(0, lines.Count - 1);
+            const int padding = 6;
+            int boxWidth = Math.Max(padding * 2, contentWidth + padding * 2);
+            boxWidth = Math.Min(MicroBoySpec.W - 4, boxWidth);
+            int boxHeight = Math.Max(padding * 2, contentHeight + padding * 2);
+            boxHeight = Math.Min(MicroBoySpec.H, boxHeight);
+            int left = (MicroBoySpec.W - boxWidth) / 2;
+            int top = MicroBoySpec.H - boxHeight - 4;
+            if (top < 0) top = 0;
+
+            FillRect(fb, left, top, boxWidth, boxHeight, 1);
+            DrawRect(fb, left, top, boxWidth, boxHeight, 3);
+
+            int textX = left + padding;
+            int textY = top + padding;
+            DrawText(fb, textX, textY, lines);
+        }
+
+        void FillRect(Span<byte> fb, int x, int y, int width, int height, byte color)
+        {
+            if (width <= 0 || height <= 0) return;
+
+            for (int yy = 0; yy < height; yy++)
+            {
+                int ry = y + yy; if ((uint)ry >= MicroBoySpec.H) continue;
+                int row = ry * MicroBoySpec.W;
+                for (int xx = 0; xx < width; xx++)
+                {
+                    int rx = x + xx; if ((uint)rx >= MicroBoySpec.W) continue;
+                    fb[row + rx] = color;
+                }
+            }
+        }
+
+        void DrawRect(Span<byte> fb, int x, int y, int width, int height, byte color)
+        {
+            if (width <= 0 || height <= 0) return;
+
+            for (int xx = 0; xx < width; xx++)
+            {
+                int rx = x + xx; if ((uint)rx >= MicroBoySpec.W) continue;
+                if ((uint)y < MicroBoySpec.H) fb[y * MicroBoySpec.W + rx] = color;
+                int by = y + height - 1;
+                if ((uint)by < MicroBoySpec.H) fb[by * MicroBoySpec.W + rx] = color;
+            }
+
+            for (int yy = 0; yy < height; yy++)
+            {
+                int ry = y + yy; if ((uint)ry >= MicroBoySpec.H) continue;
+                if ((uint)x < MicroBoySpec.W) fb[ry * MicroBoySpec.W + x] = color;
+                int bx = x + width - 1;
+                if ((uint)bx < MicroBoySpec.W) fb[ry * MicroBoySpec.W + bx] = color;
+            }
+        }
+
+        void DrawText(Span<byte> fb, int startX, int startY, IReadOnlyList<string> lines)
+        {
+            int y = startY;
+            foreach (var line in lines)
+            {
+                int x = startX;
+                foreach (char ch in line.ToUpperInvariant())
+                {
+                    if (!FontGlyphs.TryGetValue(ch, out var glyph))
+                        glyph = FontGlyphs['?'];
+
+                    DrawGlyph(fb, x, y, glyph);
+                    x += GlyphWidth + 1;
+                    if (x >= MicroBoySpec.W) break;
+                }
+
+                y += GlyphHeight + 1;
+                if (y >= MicroBoySpec.H) break;
+            }
+        }
+
+        void DrawGlyph(Span<byte> fb, int dx, int dy, byte[,] glyph)
+        {
+            int h = glyph.GetLength(0);
+            int w = glyph.GetLength(1);
+            for (int y = 0; y < h; y++)
+            {
+                int ry = dy + y; if ((uint)ry >= MicroBoySpec.H) continue;
+                int row = ry * MicroBoySpec.W;
+                for (int x = 0; x < w; x++)
+                {
+                    int rx = dx + x; if ((uint)rx >= MicroBoySpec.W) continue;
+                    byte c = glyph[y, x];
+                    if (c != 0) fb[row + rx] = c;
                 }
             }
         }
@@ -385,6 +628,64 @@ namespace MicroBoyCart.Sample
             [TILE_WALL_ID] = new TileInfo(TileCollisionType.Blocked),
             [TILE_RUG_ID] = new TileInfo(TileCollisionType.Walkable),
         };
+
+        static Dictionary<char, byte[,]> BuildFont()
+        {
+            return new Dictionary<char, byte[,]>
+            {
+                [' '] = Glyph("....", "....", "....", "....", "...."),
+                ['!'] = Glyph("..#.", "..#.", "..#.", "....", "..#."),
+                ['.'] = Glyph("....", "....", "....", "....", "..#."),
+                ['?'] = Glyph(".##.", "#..#", "..#.", "....", "..#."),
+                ['A'] = Glyph(".##.", "#..#", "####", "#..#", "#..#"),
+                ['B'] = Glyph("###.", "#..#", "###.", "#..#", "###."),
+                ['C'] = Glyph(".##.", "#..#", "#...", "#..#", ".##."),
+                ['D'] = Glyph("###.", "#..#", "#..#", "#..#", "###."),
+                ['E'] = Glyph("####", "#...", "###.", "#...", "####"),
+                ['F'] = Glyph("####", "#...", "###.", "#...", "#..."),
+                ['G'] = Glyph(".##.", "#...", "#.##", "#..#", ".###"),
+                ['H'] = Glyph("#..#", "#..#", "####", "#..#", "#..#"),
+                ['I'] = Glyph("####", "..#.", "..#.", "..#.", "####"),
+                ['J'] = Glyph("..##", "...#", "...#", "#..#", ".##."),
+                ['K'] = Glyph("#..#", "#.#.", "##..", "#.#.", "#..#"),
+                ['L'] = Glyph("#...", "#...", "#...", "#...", "####"),
+                ['M'] = Glyph("#..#", "####", "#..#", "#..#", "#..#"),
+                ['N'] = Glyph("#..#", "##.#", "#.#.", "#..#", "#..#"),
+                ['O'] = Glyph(".##.", "#..#", "#..#", "#..#", ".##."),
+                ['P'] = Glyph("###.", "#..#", "###.", "#...", "#..."),
+                ['Q'] = Glyph(".##.", "#..#", "#..#", "#.##", "..##"),
+                ['R'] = Glyph("###.", "#..#", "###.", "#.#.", "#..#"),
+                ['S'] = Glyph(".###", "#...", ".##.", "...#", "###."),
+                ['T'] = Glyph("####", "..#.", "..#.", "..#.", "..#."),
+                ['U'] = Glyph("#..#", "#..#", "#..#", "#..#", ".##."),
+                ['V'] = Glyph("#..#", "#..#", "#..#", ".#.#", "..#."),
+                ['W'] = Glyph("#..#", "#..#", "#..#", "####", "#..#"),
+                ['X'] = Glyph("#..#", ".#.#", "..#.", ".#.#", "#..#"),
+                ['Y'] = Glyph("#..#", ".#.#", "..#.", "..#.", "..#."),
+                ['Z'] = Glyph("####", "...#", "..#.", ".#..", "####"),
+            };
+        }
+
+        static byte[,] Glyph(params string[] rows)
+        {
+            if (rows.Length != GlyphHeight)
+                throw new ArgumentException("Ungültige Glyphenhöhe", nameof(rows));
+
+            var result = new byte[GlyphHeight, GlyphWidth];
+            for (int y = 0; y < GlyphHeight; y++)
+            {
+                var row = rows[y];
+                if (row.Length != GlyphWidth)
+                    throw new ArgumentException("Ungültige Glyphenbreite", nameof(rows));
+
+                for (int x = 0; x < GlyphWidth; x++)
+                {
+                    result[y, x] = row[x] == '#' ? (byte)3 : (byte)0;
+                }
+            }
+
+            return result;
+        }
 
         static Dictionary<string, MapDefinition> BuildMaps()
         {
@@ -514,6 +815,21 @@ FFFFFFFFFFFFFFFF
 ########D#######
 """;
 
+            var overworldNpcs = new[]
+            {
+                new NpcDefinition(9, 11, NPC_LASS,
+                    "HALLO TRAINER!",
+                    "DRUECKE B UM",
+                    "DEN TEXT ZU SCHLIESSEN."),
+            };
+
+            var houseNpcs = new[]
+            {
+                new NpcDefinition(8, 10, NPC_ELDER,
+                    "WILLKOMMEN IN",
+                    "MEINEM HAUS."),
+            };
+
             return new Dictionary<string, MapDefinition>
             {
                 ["overworld"] = new MapDefinition(
@@ -522,14 +838,16 @@ FFFFFFFFFFFFFFFF
                     new Dictionary<(int x, int y), WarpPoint>
                     {
                         [(24, 10)] = new WarpPoint("house", 8, 14),
-                    }),
+                    },
+                    overworldNpcs),
                 ["house"] = new MapDefinition(
                     ParseLayer(HouseGroundData, baseLegend),
                     ParseLayer(HouseOverlayData, overlayLegend, TILE_NONE),
                     new Dictionary<(int x, int y), WarpPoint>
                     {
                         [(8, 15)] = new WarpPoint("overworld", 24, 11),
-                    }),
+                    },
+                    houseNpcs),
             };
         }
 
@@ -574,8 +892,14 @@ FFFFFFFFFFFFFFFF
             readonly byte[,] ground;
             readonly byte[,] overlay;
             readonly Dictionary<(int x, int y), WarpPoint> warps;
+            readonly List<NpcDefinition> npcs;
+            readonly Dictionary<(int x, int y), NpcDefinition> npcLookup;
 
-            public MapDefinition(byte[,] ground, byte[,] overlay, Dictionary<(int x, int y), WarpPoint> warps)
+            public MapDefinition(
+                byte[,] ground,
+                byte[,] overlay,
+                Dictionary<(int x, int y), WarpPoint> warps,
+                IEnumerable<NpcDefinition>? npcs = null)
             {
                 if (ground.GetLength(0) != overlay.GetLength(0) || ground.GetLength(1) != overlay.GetLength(1))
                     throw new ArgumentException("Layer-Größen stimmen nicht überein.", nameof(overlay));
@@ -583,6 +907,17 @@ FFFFFFFFFFFFFFFF
                 this.ground = ground;
                 this.overlay = overlay;
                 this.warps = warps;
+                this.npcs = new List<NpcDefinition>();
+                npcLookup = new Dictionary<(int x, int y), NpcDefinition>();
+
+                if (npcs != null)
+                {
+                    foreach (var npc in npcs)
+                    {
+                        this.npcs.Add(npc);
+                        npcLookup[(npc.TileX, npc.TileY)] = npc;
+                    }
+                }
             }
 
             public int Width => ground.GetLength(1);
@@ -590,6 +925,7 @@ FFFFFFFFFFFFFFFF
 
             public byte GetGround(int x, int y) => ground[y, x];
             public byte GetOverlay(int x, int y) => overlay[y, x];
+            public IReadOnlyList<NpcDefinition> Npcs => npcs;
 
             public bool TryGetWarp(int x, int y, out WarpPoint warp)
             {
@@ -598,6 +934,32 @@ FFFFFFFFFFFFFFFF
 
                 warp = WarpPoint.None;
                 return false;
+            }
+
+            public bool TryGetNpc(int x, int y, out NpcDefinition npc)
+            {
+                if (npcLookup.TryGetValue((x, y), out npc))
+                    return true;
+
+                npc = default;
+                return false;
+            }
+        }
+
+        readonly struct NpcDefinition
+        {
+            public int TileX { get; }
+            public int TileY { get; }
+            public byte[,] Sprite { get; }
+            public string[] DialogLines { get; }
+            public bool HasDialog => DialogLines.Length > 0;
+
+            public NpcDefinition(int tileX, int tileY, byte[,] sprite, params string[] dialogLines)
+            {
+                TileX = tileX;
+                TileY = tileY;
+                Sprite = sprite;
+                DialogLines = dialogLines is { Length: > 0 } ? dialogLines : Array.Empty<string>();
             }
         }
 
