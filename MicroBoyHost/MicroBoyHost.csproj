@@ -13,4 +13,8 @@
     <ProjectReference Include="..\MicroBoy.Abstractions\MicroBoy.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
 </Project>
