@@ -19,17 +19,23 @@ namespace MicroBoyHost
 
         public static readonly Color[] Palette =
         {
-            Color.FromArgb(0xFF, 15,  56,  15),
-            Color.FromArgb(0xFF, 48,  98,  48),
-            Color.FromArgb(0xFF, 139, 172, 15),
-            Color.FromArgb(0xFF, 155, 188, 15)
+            Color.FromArgb(0xFF, 15,  56,  15),  // 0: tiefer Waldgrün-Ton
+            Color.FromArgb(0xFF, 48,  98,  48),  // 1: mittleres Grün
+            Color.FromArgb(0xFF, 139, 172, 15), // 2: helles Grün
+            Color.FromArgb(0xFF, 155, 188, 15), // 3: gelbliches Highlight
+            Color.FromArgb(0xFF, 217, 212, 180),// 4: heller Sand-/Pflasterton
+            Color.FromArgb(0xFF, 154, 107, 63), // 5: erdiger Braunton
+            Color.FromArgb(0xFF, 29,  87,  166),// 6: tiefes Wasserblau
+            Color.FromArgb(0xFF, 111, 181, 255),// 7: helles Wasserblau
+            Color.FromArgb(0xFF, 162, 160, 144),// 8: neutrales Stein-/Wandgrau
+            Color.FromArgb(0xFF, 184, 48,  80), // 9: Akzentfarbe (z.B. Teppich)
         };
     }
 
     internal sealed class HostForm : Form
     {
         private readonly ICartridge cart;
-        private readonly byte[] frame = new byte[MicroBoySpec.W * MicroBoySpec.H]; // 0..3
+        private readonly byte[] frame = new byte[MicroBoySpec.W * MicroBoySpec.H]; // Indizes in HostSpec.Palette
         private readonly Bitmap bmp = new Bitmap(MicroBoySpec.W, MicroBoySpec.H, PixelFormat.Format32bppArgb);
         private Buttons buttons = Buttons.None;
         private readonly Stopwatch sw = Stopwatch.StartNew();
@@ -106,7 +112,11 @@ namespace MicroBoyHost
                     int rowOff = y * MicroBoySpec.W;
                     for (int x = 0; x < MicroBoySpec.W; x++)
                     {
-                        int idx = frame[rowOff + x] & 0x03;
+                        int idx = frame[rowOff + x];
+                        if ((uint)idx >= (uint)HostSpec.Palette.Length)
+                        {
+                            idx = 0;
+                        }
                         var c = HostSpec.Palette[idx];
                         dst[x * 4 + 0] = c.B;
                         dst[x * 4 + 1] = c.G;
