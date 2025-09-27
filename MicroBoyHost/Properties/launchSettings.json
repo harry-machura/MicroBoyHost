@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "MicroBoyHost": {
+      "commandName": "Project",
+      "commandLineArgs": "C:\\Users\\Harry\\source\\repos\\MicroBoyHost\\MicroBoyCart.Sample\\bin\\Debug\\net8.0\\MicroBoyCart.Sample.dll"
+    }
+  }
+}
