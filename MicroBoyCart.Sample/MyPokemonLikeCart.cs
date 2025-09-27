@@ -25,6 +25,8 @@ namespace MicroBoyCart.Sample
         const byte TILE_FLOOR_ID = 6;
         const byte TILE_WALL_ID = 7;
         const byte TILE_RUG_ID = 8;
+        const byte TILE_CHEST_ID = 9;
+        const byte TILE_ITEM_ID = 10;
         const byte TILE_NONE = byte.MaxValue;
 
         static readonly Dictionary<string, MapDefinition> Maps = BuildMaps();
@@ -49,13 +51,20 @@ namespace MicroBoyCart.Sample
         string currentMapId = string.Empty;
         WarpPoint? pendingWarp;
         bool hasSurfAbility;
+        bool wasAButtonDown;
+        readonly List<ItemSlot> inventory = new();
 
         public void Init()
         {
+            foreach (var map in Maps.Values)
+                map.Reset();
+
             currentMapId = "overworld";
             currentMap = Maps[currentMapId];
             pendingWarp = null;
             hasSurfAbility = false;
+            wasAButtonDown = false;
+            inventory.Clear();
 
             pTileX = 5;
             pTileY = 10;
@@ -73,8 +82,12 @@ namespace MicroBoyCart.Sample
 
         public void Update(Input input, double dt)
         {
-            if (input.IsDown(Buttons.A))
-                hasSurfAbility = true; // Debug: A schaltet Surf-Fähigkeit frei
+            bool aDown = input.IsDown(Buttons.A);
+            if (!isMoving && aDown && !wasAButtonDown)
+            {
+                HandleInteraction();
+            }
+            wasAButtonDown = aDown;
 
             // Falls wir gerade unterwegs sind -> zum Ziel gleiten
             if (isMoving)
@@ -188,6 +201,52 @@ namespace MicroBoyCart.Sample
             isMoving = false;
         }
 
+        void HandleInteraction()
+        {
+            if (currentMap is null) return;
+
+            var (fx, fy) = GetFacingTile();
+            if (TryPickupItemAt(fx, fy))
+                return;
+
+            TryPickupItemAt(pTileX, pTileY);
+        }
+
+        bool TryPickupItemAt(int tx, int ty)
+        {
+            if (currentMap is null) return false;
+            if (!currentMap.IsInside(tx, ty)) return false;
+
+            if (currentMap.TryTakeItem(tx, ty, out var slot))
+            {
+                inventory.Add(slot);
+                OnItemPicked(slot);
+                return true;
+            }
+
+            return false;
+        }
+
+        (int x, int y) GetFacingTile()
+            => dir switch
+            {
+                0 => (pTileX, pTileY + 1),
+                1 => (pTileX - 1, pTileY),
+                2 => (pTileX + 1, pTileY),
+                3 => (pTileX, pTileY - 1),
+                _ => (pTileX, pTileY),
+            };
+
+        void OnItemPicked(ItemSlot slot)
+        {
+            switch (slot.Type)
+            {
+                case ItemType.SurfKit:
+                    hasSurfAbility = true;
+                    break;
+            }
+        }
+
         public void Render(Span<byte> frame)
         {
             if (currentMap is null) return;
@@ -229,6 +288,7 @@ namespace MicroBoyCart.Sample
 
             // Spieler (8x8) zeichnen – einfache 2-Frame „Animation“
             DrawPlayer(frame, px - camX, py - camY);
+            DrawInventoryHud(frame);
         }
 
         // --- Tileset: mehrere Tiles mit erweiterten Palettenindizes ---
@@ -353,6 +413,30 @@ namespace MicroBoyCart.Sample
             {COLOR_PATH_DARK, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_PATH_DARK},
         };
 
+        static readonly byte[,] TILE_CHEST =
+        {
+            {0, 0, 0, 0, 0, 0, 0, 0},
+            {0, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, 0},
+            {0, COLOR_PATH_DARK, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_PATH_DARK, 0},
+            {0, COLOR_PATH_DARK, COLOR_RUG, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_RUG, COLOR_PATH_DARK, 0},
+            {0, COLOR_PATH_DARK, COLOR_RUG, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_RUG, COLOR_PATH_DARK, 0},
+            {0, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, 0},
+            {0, COLOR_PATH_DARK, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_PATH_DARK, 0},
+            {0, 0, 0, 0, 0, 0, 0, 0},
+        };
+
+        static readonly byte[,] TILE_ITEM =
+        {
+            {0, 0, 0, 0, 0, 0, 0, 0},
+            {0, 0, 0, COLOR_RUG, COLOR_RUG, 0, 0, 0},
+            {0, 0, COLOR_RUG, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_RUG, 0, 0},
+            {0, 0, 0, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, 0, 0, 0},
+            {0, 0, 0, 0, COLOR_PATH_LIGHT, 0, 0, 0},
+            {0, 0, 0, COLOR_PATH_LIGHT, 0, 0, 0, 0},
+            {0, 0, 0, 0, 0, 0, 0, 0},
+            {0, 0, 0, 0, 0, 0, 0, 0},
+        };
+
         void BlitTile(Span<byte> fb, int dx, int dy, byte baseId, byte overlayId)
         {
             DrawTileLayer(fb, dx, dy, baseId, transparent: false);
@@ -375,6 +459,103 @@ namespace MicroBoyCart.Sample
                     fb[row + rx] = c;
                 }
             }
+        }
+
+        void DrawInventoryHud(Span<byte> fb)
+        {
+            const int hudX = 2;
+            const int hudY = 2;
+            const int hudWidth = 60;
+            const int slotHeight = 9;
+
+            int slotCount = Math.Max(inventory.Count, 1);
+            int hudHeight = 12 + slotCount * slotHeight;
+
+            if (hudX >= MicroBoySpec.W || hudY >= MicroBoySpec.H)
+                return;
+
+            if (hudY + hudHeight > MicroBoySpec.H)
+                hudHeight = MicroBoySpec.H - hudY;
+
+            FillRect(fb, hudX, hudY, hudWidth, hudHeight, COLOR_PATH_DARK);
+            FillRect(fb, hudX + 1, hudY + 1, hudWidth - 2, hudHeight - 2, COLOR_PATH_LIGHT);
+
+            DrawHudText(fb, hudX + 4, hudY + 2, "INV", COLOR_PATH_DARK);
+
+            int slotTop = hudY + 8;
+            if (inventory.Count == 0)
+            {
+                DrawHudText(fb, hudX + 4, slotTop + 1, "EMPTY", COLOR_PATH_DARK);
+                return;
+            }
+
+            foreach (var slot in inventory)
+            {
+                FillRect(fb, hudX + 4, slotTop, hudWidth - 8, slotHeight - 2, COLOR_GRASS_LIGHT);
+                FillRect(fb, hudX + 5, slotTop + 1, 8, slotHeight - 4, COLOR_GRASS_MID);
+                DrawHudChar(fb, hudX + 6, slotTop + 2, slot.Symbol, COLOR_PATH_DARK);
+                DrawHudText(fb, hudX + 15, slotTop + 2, slot.Name.ToUpperInvariant(), COLOR_PATH_DARK);
+                slotTop += slotHeight;
+            }
+        }
+
+        void FillRect(Span<byte> fb, int x, int y, int width, int height, byte color)
+        {
+            if (width <= 0 || height <= 0) return;
+
+            for (int iy = 0; iy < height; iy++)
+            {
+                int ry = y + iy;
+                if ((uint)ry >= MicroBoySpec.H) continue;
+                int rowOffset = ry * MicroBoySpec.W;
+
+                for (int ix = 0; ix < width; ix++)
+                {
+                    int rx = x + ix;
+                    if ((uint)rx >= MicroBoySpec.W) continue;
+                    fb[rowOffset + rx] = color;
+                }
+            }
+        }
+
+        void DrawHudText(Span<byte> fb, int x, int y, string text, byte color)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+
+            int cursor = x;
+            foreach (char ch in text)
+            {
+                cursor += DrawHudChar(fb, cursor, y, ch, color);
+            }
+        }
+
+        int DrawHudChar(Span<byte> fb, int x, int y, char ch, byte color)
+        {
+            if (ch == ' ')
+                return 3;
+
+            char upper = char.ToUpperInvariant(ch);
+            if (!HudFont.TryGetValue(upper, out var rows))
+                rows = HudFont['?'];
+
+            for (int rowIndex = 0; rowIndex < rows.Length; rowIndex++)
+            {
+                int pattern = rows[rowIndex];
+                int ry = y + rowIndex;
+                if ((uint)ry >= MicroBoySpec.H) continue;
+                int rowOffset = ry * MicroBoySpec.W;
+
+                for (int col = 0; col < 4; col++)
+                {
+                    if ((pattern & (1 << (3 - col))) == 0) continue;
+
+                    int rx = x + col;
+                    if ((uint)rx >= MicroBoySpec.W) continue;
+                    fb[rowOffset + rx] = color;
+                }
+            }
+
+            return 5;
         }
 
         static byte[,] GetTileSprite(byte id)
@@ -444,6 +625,8 @@ namespace MicroBoyCart.Sample
             [TILE_FLOOR_ID] = TILE_FLOOR,
             [TILE_WALL_ID] = TILE_WALL,
             [TILE_RUG_ID] = TILE_RUG,
+            [TILE_CHEST_ID] = TILE_CHEST,
+            [TILE_ITEM_ID] = TILE_ITEM,
         };
 
         static readonly TileInfo DefaultTileInfo = new(TileCollisionType.Walkable);
@@ -459,6 +642,49 @@ namespace MicroBoyCart.Sample
             [TILE_FLOOR_ID] = new TileInfo(TileCollisionType.Walkable),
             [TILE_WALL_ID] = new TileInfo(TileCollisionType.Blocked),
             [TILE_RUG_ID] = new TileInfo(TileCollisionType.Walkable),
+            [TILE_CHEST_ID] = new TileInfo(TileCollisionType.Blocked),
+            [TILE_ITEM_ID] = new TileInfo(TileCollisionType.Walkable),
+        };
+
+        static readonly Dictionary<char, byte[]> HudFont = new()
+        {
+            ['0'] = new byte[] { 0b0110, 0b1001, 0b1001, 0b1001, 0b0110 },
+            ['1'] = new byte[] { 0b0100, 0b1100, 0b0100, 0b0100, 0b1110 },
+            ['2'] = new byte[] { 0b1110, 0b0001, 0b0110, 0b1000, 0b1111 },
+            ['3'] = new byte[] { 0b1110, 0b0001, 0b0110, 0b0001, 0b1110 },
+            ['4'] = new byte[] { 0b1001, 0b1001, 0b1111, 0b0001, 0b0001 },
+            ['5'] = new byte[] { 0b1111, 0b1000, 0b1110, 0b0001, 0b1110 },
+            ['6'] = new byte[] { 0b0111, 0b1000, 0b1110, 0b1001, 0b0110 },
+            ['7'] = new byte[] { 0b1111, 0b0001, 0b0010, 0b0100, 0b0100 },
+            ['8'] = new byte[] { 0b0110, 0b1001, 0b0110, 0b1001, 0b0110 },
+            ['9'] = new byte[] { 0b0110, 0b1001, 0b0111, 0b0001, 0b1110 },
+            ['A'] = new byte[] { 0b0110, 0b1001, 0b1111, 0b1001, 0b1001 },
+            ['B'] = new byte[] { 0b1110, 0b1001, 0b1110, 0b1001, 0b1110 },
+            ['C'] = new byte[] { 0b0111, 0b1000, 0b1000, 0b1000, 0b0111 },
+            ['D'] = new byte[] { 0b1110, 0b1001, 0b1001, 0b1001, 0b1110 },
+            ['E'] = new byte[] { 0b1111, 0b1000, 0b1110, 0b1000, 0b1111 },
+            ['F'] = new byte[] { 0b1111, 0b1000, 0b1110, 0b1000, 0b1000 },
+            ['G'] = new byte[] { 0b0111, 0b1000, 0b1011, 0b1001, 0b0111 },
+            ['H'] = new byte[] { 0b1001, 0b1001, 0b1111, 0b1001, 0b1001 },
+            ['I'] = new byte[] { 0b1111, 0b0100, 0b0100, 0b0100, 0b1111 },
+            ['J'] = new byte[] { 0b1111, 0b0001, 0b0001, 0b1001, 0b0110 },
+            ['K'] = new byte[] { 0b1001, 0b1010, 0b1100, 0b1010, 0b1001 },
+            ['L'] = new byte[] { 0b1000, 0b1000, 0b1000, 0b1000, 0b1111 },
+            ['M'] = new byte[] { 0b1001, 0b1111, 0b1011, 0b1001, 0b1001 },
+            ['N'] = new byte[] { 0b1001, 0b1101, 0b1011, 0b1001, 0b1001 },
+            ['O'] = new byte[] { 0b0110, 0b1001, 0b1001, 0b1001, 0b0110 },
+            ['P'] = new byte[] { 0b1110, 0b1001, 0b1110, 0b1000, 0b1000 },
+            ['Q'] = new byte[] { 0b0110, 0b1001, 0b1001, 0b1010, 0b0101 },
+            ['R'] = new byte[] { 0b1110, 0b1001, 0b1110, 0b1010, 0b1001 },
+            ['S'] = new byte[] { 0b0111, 0b1000, 0b0110, 0b0001, 0b1110 },
+            ['T'] = new byte[] { 0b1111, 0b0100, 0b0100, 0b0100, 0b0100 },
+            ['U'] = new byte[] { 0b1001, 0b1001, 0b1001, 0b1001, 0b0110 },
+            ['V'] = new byte[] { 0b1001, 0b1001, 0b1001, 0b0110, 0b0110 },
+            ['W'] = new byte[] { 0b1001, 0b1001, 0b1011, 0b1111, 0b1001 },
+            ['X'] = new byte[] { 0b1001, 0b0110, 0b0100, 0b0110, 0b1001 },
+            ['Y'] = new byte[] { 0b1001, 0b0110, 0b0100, 0b0100, 0b0100 },
+            ['Z'] = new byte[] { 0b1111, 0b0010, 0b0100, 0b1000, 0b1111 },
+            ['?'] = new byte[] { 0b1110, 0b0001, 0b0110, 0b0000, 0b0100 },
         };
 
         static Dictionary<string, MapDefinition> BuildMaps()
@@ -479,6 +705,8 @@ namespace MicroBoyCart.Sample
                 ['D'] = TILE_DOOR_ID,
                 ['#'] = TILE_WALL_ID,
                 ['r'] = TILE_RUG_ID,
+                ['C'] = TILE_CHEST_ID,
+                ['I'] = TILE_ITEM_ID,
             };
 
             const string OverworldGroundData = """
@@ -535,7 +763,7 @@ T...ttttttttt..................T
 T...ttttttttt..................T
 T...ttttttttt..................T
 T...ttttttttt..................T
-T..............................T
+T............I.................T
 T..............................T
 T..............................T
 T..............................T
@@ -573,7 +801,7 @@ FFFFFFFFFFFFFFFF
             const string HouseOverlayData = """
 ################
 #..............#
-#..............#
+#.....C........#
 #..............#
 #...rrrrrrrr...#
 #...rrrrrrrr...#
@@ -589,6 +817,16 @@ FFFFFFFFFFFFFFFF
 ########D#######
 """;
 
+            var overworldItems = new Dictionary<(int x, int y), ItemSlot>
+            {
+                [(13, 18)] = new ItemSlot(ItemType.Berry, "Berry", 'B'),
+            };
+
+            var houseItems = new Dictionary<(int x, int y), ItemSlot>
+            {
+                [(6, 2)] = new ItemSlot(ItemType.SurfKit, "Surf Kit", 'S'),
+            };
+
             return new Dictionary<string, MapDefinition>
             {
                 ["overworld"] = new MapDefinition(
@@ -597,14 +835,16 @@ FFFFFFFFFFFFFFFF
                     new Dictionary<(int x, int y), WarpPoint>
                     {
                         [(24, 10)] = new WarpPoint("house", 8, 14),
-                    }),
+                    },
+                    overworldItems),
                 ["house"] = new MapDefinition(
                     ParseLayer(HouseGroundData, baseLegend),
                     ParseLayer(HouseOverlayData, overlayLegend, TILE_NONE),
                     new Dictionary<(int x, int y), WarpPoint>
                     {
                         [(8, 15)] = new WarpPoint("overworld", 24, 11),
-                    }),
+                    },
+                    houseItems),
             };
         }
 
@@ -647,17 +887,23 @@ FFFFFFFFFFFFFFFF
         sealed class MapDefinition
         {
             readonly byte[,] ground;
+            readonly byte[,] overlayInitial;
             readonly byte[,] overlay;
             readonly Dictionary<(int x, int y), WarpPoint> warps;
+            readonly Dictionary<(int x, int y), ItemSlot> initialItems;
+            readonly Dictionary<(int x, int y), ItemSlot> items;
 
-            public MapDefinition(byte[,] ground, byte[,] overlay, Dictionary<(int x, int y), WarpPoint> warps)
+            public MapDefinition(byte[,] groundLayer, byte[,] overlayLayer, Dictionary<(int x, int y), WarpPoint> warps, Dictionary<(int x, int y), ItemSlot> items)
             {
-                if (ground.GetLength(0) != overlay.GetLength(0) || ground.GetLength(1) != overlay.GetLength(1))
-                    throw new ArgumentException("Layer-Größen stimmen nicht überein.", nameof(overlay));
+                if (groundLayer.GetLength(0) != overlayLayer.GetLength(0) || groundLayer.GetLength(1) != overlayLayer.GetLength(1))
+                    throw new ArgumentException("Layer-Größen stimmen nicht überein.", nameof(overlayLayer));
 
-                this.ground = ground;
-                this.overlay = overlay;
-                this.warps = warps;
+                ground = (byte[,])groundLayer.Clone();
+                overlayInitial = (byte[,])overlayLayer.Clone();
+                overlay = (byte[,])overlayLayer.Clone();
+                this.warps = new Dictionary<(int x, int y), WarpPoint>(warps);
+                initialItems = new Dictionary<(int x, int y), ItemSlot>(items);
+                this.items = new Dictionary<(int x, int y), ItemSlot>(items);
             }
 
             public int Width => ground.GetLength(1);
@@ -674,6 +920,30 @@ FFFFFFFFFFFFFFFF
                 warp = WarpPoint.None;
                 return false;
             }
+
+            public bool IsInside(int x, int y)
+                => x >= 0 && y >= 0 && x < Width && y < Height;
+
+            public bool TryTakeItem(int x, int y, out ItemSlot item)
+            {
+                if (items.TryGetValue((x, y), out item))
+                {
+                    items.Remove((x, y));
+                    overlay[y, x] = TILE_NONE;
+                    return true;
+                }
+
+                item = default;
+                return false;
+            }
+
+            public void Reset()
+            {
+                Buffer.BlockCopy(overlayInitial, 0, overlay, 0, overlayInitial.Length);
+                items.Clear();
+                foreach (var entry in initialItems)
+                    items[entry.Key] = entry.Value;
+            }
         }
 
         readonly record struct WarpPoint(string MapId, int TargetX, int TargetY)
@@ -681,6 +951,14 @@ FFFFFFFFFFFFFFFF
             public bool IsValid => !string.IsNullOrEmpty(MapId);
             public static WarpPoint None => new(string.Empty, 0, 0);
         }
+
+        enum ItemType
+        {
+            SurfKit,
+            Berry,
+        }
+
+        readonly record struct ItemSlot(ItemType Type, string Name, char Symbol);
 
         enum TileCollisionType
         {
