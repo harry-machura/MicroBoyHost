@@ -9,6 +9,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using MicroBoy;
+using NAudio.Wave;
 
 namespace MicroBoyHost
 {
@@ -41,10 +42,12 @@ namespace MicroBoyHost
         private readonly Stopwatch sw = Stopwatch.StartNew();
         private long lastTicks;
         private readonly double targetDelta = 1.0 / HostSpec.TargetFps;
+        private readonly HostAudio audio;
 
         public HostForm(ICartridge cart)
         {
             this.cart = cart;
+            audio = new HostAudio(cart, targetDelta);
 
             // Form-Basics (keine Designer-Datei)
             AutoScaleMode = AutoScaleMode.None;
@@ -75,12 +78,19 @@ namespace MicroBoyHost
                 lastTicks = now;
 
                 cart.Update(new Input(buttons), dt);
+                audio.SubmitAudio(cart, dt);
                 cart.Render(frame);
                 BlitFrameToBitmap();
 
                 Invalidate();
                 Update();
             }
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            audio.Dispose();
+            base.OnClosed(e);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -167,6 +177,99 @@ namespace MicroBoyHost
             public IntPtr lParam;
             public uint time;
             public System.Drawing.Point pt;
+        }
+
+        private sealed class HostAudio : IDisposable
+        {
+            private readonly int sampleRate;
+            private readonly int channels;
+            private readonly BufferedWaveProvider provider;
+            private readonly WaveOutEvent output;
+            private float[] mixBuffer;
+            private byte[] byteBuffer;
+            private double sampleRemainder;
+
+            public HostAudio(ICartridge cart, double targetDelta)
+            {
+                sampleRate = Math.Max(8000, cart.AudioSampleRate);
+                channels = Math.Clamp(cart.AudioChannelCount, 1, 8);
+
+                provider = new BufferedWaveProvider(WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels))
+                {
+                    DiscardOnBufferOverflow = true,
+                    BufferDuration = TimeSpan.FromSeconds(1)
+                };
+
+                output = new WaveOutEvent
+                {
+                    DesiredLatency = (int)Math.Clamp(targetDelta * 1000.0, 10.0, 200.0)
+                };
+                output.Init(provider);
+                output.Play();
+
+                int initialSamples = (int)Math.Ceiling(sampleRate * targetDelta) * channels;
+                if (initialSamples < channels)
+                {
+                    initialSamples = channels;
+                }
+                mixBuffer = new float[initialSamples];
+                byteBuffer = new byte[initialSamples * sizeof(float)];
+            }
+
+            public void SubmitAudio(ICartridge cart, double dt)
+            {
+                double exactSamples = dt * sampleRate + sampleRemainder;
+                int sampleCount = (int)Math.Floor(exactSamples);
+                sampleRemainder = exactSamples - sampleCount;
+
+                if (sampleCount <= 0)
+                {
+                    return;
+                }
+
+                int requiredFloats = sampleCount * channels;
+                EnsureCapacity(requiredFloats);
+
+                var target = mixBuffer.AsSpan(0, requiredFloats);
+                target.Clear();
+                cart.MixAudio(target);
+
+                int byteCount = requiredFloats * sizeof(float);
+                Buffer.BlockCopy(mixBuffer, 0, byteBuffer, 0, byteCount);
+                provider.AddSamples(byteBuffer, 0, byteCount);
+
+                if (provider.BufferedDuration.TotalSeconds > 0.5)
+                {
+                    provider.ClearBuffer();
+                }
+            }
+
+            private void EnsureCapacity(int requiredFloats)
+            {
+                if (mixBuffer.Length >= requiredFloats)
+                {
+                    return;
+                }
+
+                int newSize = mixBuffer.Length;
+                if (newSize == 0)
+                {
+                    newSize = channels;
+                }
+                while (newSize < requiredFloats)
+                {
+                    newSize *= 2;
+                }
+
+                mixBuffer = new float[newSize];
+                byteBuffer = new byte[newSize * sizeof(float)];
+            }
+
+            public void Dispose()
+            {
+                output.Stop();
+                output.Dispose();
+            }
         }
     }
 

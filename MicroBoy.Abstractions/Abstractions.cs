@@ -26,4 +26,8 @@ public interface ICartridge
     void Init();
     void Update(Input input, double dt);
     void Render(Span<byte> frame);
+
+    int AudioSampleRate => 44100;
+    int AudioChannelCount => 2;
+    void MixAudio(Span<float> buffer) => buffer.Clear();
 }

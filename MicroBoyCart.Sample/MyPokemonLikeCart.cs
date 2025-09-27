@@ -10,6 +10,9 @@ namespace MicroBoyCart.Sample
         public string Title => "MicroBoy Demo Map";
         public string Author => "Harry";
 
+        public int AudioSampleRate => 44100;
+        public int AudioChannelCount => 2;
+
         // --- Spielfeld-Setup ---
         const int TILE_W = 8, TILE_H = 8;
 
@@ -36,6 +39,12 @@ namespace MicroBoyCart.Sample
         // Richtung (0=unten,1=links,2=rechts,3=oben) für Sprite-Flip/Varianz
         int dir;
 
+        // Einfache Audio-State-Maschine
+        double audioPhase;
+        double melodyTimer;
+        int melodyIndex;
+        static readonly double[] Melody = { 220.0, 246.0, 262.0, 294.0, 330.0, 294.0, 262.0, 246.0 };
+
         MapDefinition currentMap = null!;
         string currentMapId = string.Empty;
         WarpPoint? pendingWarp;
@@ -56,6 +65,10 @@ namespace MicroBoyCart.Sample
             targetPx = px; targetPy = py;
             isMoving = false;
             dir = 0;
+
+            audioPhase = 0;
+            melodyTimer = 0;
+            melodyIndex = 0;
         }
 
         public void Update(Input input, double dt)
@@ -369,6 +382,56 @@ namespace MicroBoyCart.Sample
 
         static TileInfo GetTileInfo(byte id)
             => TileRules.TryGetValue(id, out var info) ? info : DefaultTileInfo;
+
+        public void MixAudio(Span<float> buffer)
+        {
+            int channels = AudioChannelCount;
+            if (channels <= 0)
+            {
+                return;
+            }
+
+            int samples = buffer.Length / channels;
+            if (samples <= 0)
+            {
+                buffer.Clear();
+                return;
+            }
+
+            double stepDuration = isMoving ? 0.18 : 0.32;
+            double vibratoSpeed = isMoving ? 8.0 : 5.0;
+            double vibratoDepth = isMoving ? 6.0 : 3.0;
+            int sampleRate = AudioSampleRate;
+            const double twoPi = Math.PI * 2.0;
+
+            for (int i = 0; i < samples; i++)
+            {
+                melodyTimer += 1.0 / sampleRate;
+                if (melodyTimer >= stepDuration)
+                {
+                    melodyTimer -= stepDuration;
+                    melodyIndex = (melodyIndex + 1) % Melody.Length;
+                }
+
+                double freq = Melody[melodyIndex];
+                double vibrato = Math.Sin((melodyTimer + i / (double)sampleRate) * twoPi * vibratoSpeed) * vibratoDepth;
+                double phaseStep = twoPi * (freq + vibrato) / sampleRate;
+
+                audioPhase += phaseStep;
+                if (audioPhase >= twoPi)
+                {
+                    audioPhase -= twoPi;
+                }
+
+                float sample = (float)(Math.Sin(audioPhase) * 0.18);
+
+                int baseIndex = i * channels;
+                for (int ch = 0; ch < channels; ch++)
+                {
+                    buffer[baseIndex + ch] = sample;
+                }
+            }
+        }
 
         static readonly Dictionary<byte, byte[,]> TileLookup = new()
         {
