@@ -10,9 +10,20 @@ namespace MicroBoyCart.Sample
         public string Author => "Harry";
 
         // --- Spielfeld-Setup ---
-        // 0 = Gras, 1 = Weg, 2 = Baum/Wand
+        // 0 = Gras, 1 = Weg, 2 = Baum/Wand, 3 = hohes Gras, 4 = Wasser,
+        // 5 = Tür/Portal, 6 = Innenboden hell, 7 = Innenwand, 8 = Teppichboden
         const int TILE_W = 8, TILE_H = 8;
         const int MAP_W = 32, MAP_H = 32;
+
+        const byte TILE_ID_GRASS = 0;
+        const byte TILE_ID_PATH = 1;
+        const byte TILE_ID_TREE = 2;
+        const byte TILE_ID_TALL_GRASS = 3;
+        const byte TILE_ID_WATER = 4;
+        const byte TILE_ID_DOOR = 5;
+        const byte TILE_ID_INTERIOR_FLOOR = 6;
+        const byte TILE_ID_INTERIOR_WALL = 7;
+        const byte TILE_ID_INTERIOR_CARPET = 8;
 
         // Einfache Karte (Rand = Bäume)
         static readonly byte[,] Map = BuildMap();
@@ -22,19 +33,19 @@ namespace MicroBoyCart.Sample
             var m = new byte[MAP_H, MAP_W];
             for (int y = 0; y < MAP_H; y++)
                 for (int x = 0; x < MAP_W; x++)
-                    m[y, x] = 0; // Gras
+                    m[y, x] = TILE_ID_GRASS; // Gras
 
             // Rand als Bäume
-            for (int x = 0; x < MAP_W; x++) { m[0, x] = 2; m[MAP_H - 1, x] = 2; }
-            for (int y = 0; y < MAP_H; y++) { m[y, 0] = 2; m[y, MAP_W - 1] = 2; }
+            for (int x = 0; x < MAP_W; x++) { m[0, x] = TILE_ID_TREE; m[MAP_H - 1, x] = TILE_ID_TREE; }
+            for (int y = 0; y < MAP_H; y++) { m[y, 0] = TILE_ID_TREE; m[y, MAP_W - 1] = TILE_ID_TREE; }
 
             // Ein paar Wege
-            for (int x = 2; x < MAP_W - 2; x++) m[10, x] = 1;
-            for (int y = 3; y < 20; y++) m[y, 8] = 1;
-            for (int x = 8; x < 24; x++) m[20, x] = 1;
+            for (int x = 2; x < MAP_W - 2; x++) m[10, x] = TILE_ID_PATH;
+            for (int y = 3; y < 20; y++) m[y, 8] = TILE_ID_PATH;
+            for (int x = 8; x < 24; x++) m[20, x] = TILE_ID_PATH;
 
             // Kleine „Mauer“
-            for (int y = 5; y < 14; y++) m[y, 16] = 2;
+            for (int y = 5; y < 14; y++) m[y, 16] = TILE_ID_TREE;
 
             return m;
         }
@@ -100,7 +111,19 @@ namespace MicroBoyCart.Sample
         {
             if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return false;
             byte t = Map[ty, tx];
-            return t != 2; // 2 = Baum/Wand = gesperrt
+            return t switch
+            {
+                TILE_ID_GRASS => true,
+                TILE_ID_PATH => true,
+                TILE_ID_TALL_GRASS => true,
+                TILE_ID_DOOR => true,
+                TILE_ID_INTERIOR_FLOOR => true,
+                TILE_ID_INTERIOR_CARPET => true,
+                TILE_ID_TREE => false,
+                TILE_ID_WATER => false,
+                TILE_ID_INTERIOR_WALL => false,
+                _ => false,
+            };
         }
 
         public void Render(Span<byte> frame)
@@ -178,9 +201,93 @@ namespace MicroBoyCart.Sample
             {2,2,2,2,2,2,2,2},
         };
 
+        static readonly byte[,] TILE_TALL_GRASS = // hohes Gras
+        {
+            {0,1,0,1,0,1,0,1},
+            {1,2,1,2,1,2,1,2},
+            {0,1,0,2,0,1,0,2},
+            {1,2,1,3,1,2,1,3},
+            {0,1,0,2,0,1,0,2},
+            {1,2,1,3,1,2,1,3},
+            {0,1,0,2,0,1,0,2},
+            {1,2,1,2,1,2,1,2},
+        };
+
+        static readonly byte[,] TILE_WATER = // Wasser
+        {
+            {1,2,2,1,1,2,2,1},
+            {2,3,3,2,2,3,3,2},
+            {1,2,2,1,1,2,2,1},
+            {2,3,3,2,2,3,3,2},
+            {1,2,2,1,1,2,2,1},
+            {2,3,3,2,2,3,3,2},
+            {1,2,2,1,1,2,2,1},
+            {2,3,3,2,2,3,3,2},
+        };
+
+        static readonly byte[,] TILE_DOOR = // Tür/Portal
+        {
+            {2,2,2,2,2,2,2,2},
+            {2,3,3,3,3,3,3,2},
+            {2,3,1,1,1,1,3,2},
+            {2,3,1,2,2,1,3,2},
+            {2,3,1,2,2,1,3,2},
+            {2,3,1,1,1,1,3,2},
+            {2,3,3,3,3,3,3,2},
+            {2,2,2,2,2,2,2,2},
+        };
+
+        static readonly byte[,] TILE_INTERIOR_FLOOR = // Innenboden helles Schachbrett
+        {
+            {1,1,2,2,1,1,2,2},
+            {1,1,2,2,1,1,2,2},
+            {2,2,1,1,2,2,1,1},
+            {2,2,1,1,2,2,1,1},
+            {1,1,2,2,1,1,2,2},
+            {1,1,2,2,1,1,2,2},
+            {2,2,1,1,2,2,1,1},
+            {2,2,1,1,2,2,1,1},
+        };
+
+        static readonly byte[,] TILE_INTERIOR_CARPET = // Innenboden dunkel/Teppich
+        {
+            {2,2,3,3,2,2,3,3},
+            {2,2,3,3,2,2,3,3},
+            {3,3,2,2,3,3,2,2},
+            {3,3,2,2,3,3,2,2},
+            {2,2,3,3,2,2,3,3},
+            {2,2,3,3,2,2,3,3},
+            {3,3,2,2,3,3,2,2},
+            {3,3,2,2,3,3,2,2},
+        };
+
+        static readonly byte[,] TILE_INTERIOR_WALL = // Innenwand
+        {
+            {3,3,3,3,3,3,3,3},
+            {3,2,2,2,2,2,2,3},
+            {3,2,3,3,3,3,2,3},
+            {3,2,3,3,3,3,2,3},
+            {3,2,3,3,3,3,2,3},
+            {3,2,3,3,3,3,2,3},
+            {3,2,2,2,2,2,2,3},
+            {3,3,3,3,3,3,3,3},
+        };
+
         void BlitTile(Span<byte> fb, int dx, int dy, byte id)
         {
-            var tile = id switch { 1 => TILE_PATH, 2 => TILE_TREE, _ => TILE_GRASS };
+            var tile = id switch
+            {
+                TILE_ID_GRASS => TILE_GRASS,
+                TILE_ID_PATH => TILE_PATH,
+                TILE_ID_TREE => TILE_TREE,
+                TILE_ID_TALL_GRASS => TILE_TALL_GRASS,
+                TILE_ID_WATER => TILE_WATER,
+                TILE_ID_DOOR => TILE_DOOR,
+                TILE_ID_INTERIOR_FLOOR => TILE_INTERIOR_FLOOR,
+                TILE_ID_INTERIOR_CARPET => TILE_INTERIOR_CARPET,
+                TILE_ID_INTERIOR_WALL => TILE_INTERIOR_WALL,
+                _ => TILE_GRASS
+            };
             for (int y = 0; y < TILE_H; y++)
             {
                 int ry = dy + y; if ((uint)ry >= MicroBoySpec.H) continue;
