@@ -35,6 +35,10 @@ namespace MicroBoyCart.Sample
         int targetPx, targetPy;      // Zielpixel beim Schritt
         bool isMoving;               // läuft gerade ein Schritt?
         int stepSpeedPx = 2;         // Pixel pro Frame (~120px/s bei 60 FPS)
+        int maxHealth;
+        int currentHealth;
+        double damageCooldownTimer;
+        const double DamageCooldownDuration = 1.0; // Sekunden Unverwundbarkeit nach Schaden
 
         // Richtung (0=unten,1=links,2=rechts,3=oben) für Sprite-Flip/Varianz
         int dir;
@@ -56,6 +60,9 @@ namespace MicroBoyCart.Sample
             currentMap = Maps[currentMapId];
             pendingWarp = null;
             hasSurfAbility = false;
+            maxHealth = 6;
+            currentHealth = maxHealth;
+            damageCooldownTimer = 0;
 
             pTileX = 5;
             pTileY = 10;
@@ -73,6 +80,11 @@ namespace MicroBoyCart.Sample
 
         public void Update(Input input, double dt)
         {
+            if (damageCooldownTimer > 0)
+            {
+                damageCooldownTimer = Math.Max(0, damageCooldownTimer - dt);
+            }
+
             if (input.IsDown(Buttons.A))
                 hasSurfAbility = true; // Debug: A schaltet Surf-Fähigkeit frei
 
@@ -96,7 +108,12 @@ namespace MicroBoyCart.Sample
                         pendingWarp = null;
                         ExecuteWarp(warp2);
                     }
+
+                    EvaluateHazardState();
+                    return;
                 }
+
+                EvaluateHazardState();
                 return;
             }
 
@@ -106,7 +123,11 @@ namespace MicroBoyCart.Sample
             else if (input.IsDown(Buttons.Right)) { nx = pTileX + 1; dir = 2; }
             else if (input.IsDown(Buttons.Up)) { ny = pTileY - 1; dir = 3; }
             else if (input.IsDown(Buttons.Down)) { ny = pTileY + 1; dir = 0; }
-            else return; // keine Richtung gedrückt
+            else
+            {
+                EvaluateHazardState();
+                return; // keine Richtung gedrückt
+            }
 
             if (IsWalkable(nx, ny, out var warp))
             {
@@ -120,6 +141,8 @@ namespace MicroBoyCart.Sample
             {
                 pendingWarp = null;
             }
+
+            EvaluateHazardState();
         }
 
         bool IsWalkable(int tx, int ty, out WarpPoint warp)
@@ -229,6 +252,8 @@ namespace MicroBoyCart.Sample
 
             // Spieler (8x8) zeichnen – einfache 2-Frame „Animation“
             DrawPlayer(frame, px - camX, py - camY);
+
+            DrawHealthBar(frame);
         }
 
         // --- Tileset: mehrere Tiles mit erweiterten Palettenindizes ---
@@ -691,6 +716,120 @@ FFFFFFFFFFFFFFFF
         }
 
         readonly record struct TileInfo(TileCollisionType Collision);
+
+        void EvaluateHazardState()
+        {
+            if (currentMap is null)
+                return;
+
+            if (currentHealth <= 0)
+            {
+                HandlePlayerDefeat();
+                return;
+            }
+
+            if (px < 0 || py < 0)
+                return;
+
+            int tileX = px / TILE_W;
+            int tileY = py / TILE_H;
+
+            if ((uint)tileX >= (uint)currentMap.Width || (uint)tileY >= (uint)currentMap.Height)
+                return;
+
+            if (!IsHazardTile(tileX, tileY))
+                return;
+
+            if (damageCooldownTimer > 0)
+                return;
+
+            currentHealth = Math.Max(0, currentHealth - 1);
+            damageCooldownTimer = DamageCooldownDuration;
+
+            if (currentHealth <= 0)
+                HandlePlayerDefeat();
+        }
+
+        bool IsHazardTile(int tileX, int tileY)
+        {
+            byte overlayId = currentMap.GetOverlay(tileX, tileY);
+            if (overlayId != TILE_NONE)
+            {
+                if (overlayId == TILE_TALL_GRASS_ID)
+                    return true;
+
+                var overlayInfo = GetTileInfo(overlayId);
+                if (overlayInfo.Collision == TileCollisionType.Water && !hasSurfAbility)
+                    return true;
+            }
+
+            byte baseId = currentMap.GetGround(tileX, tileY);
+            if (baseId == TILE_TALL_GRASS_ID)
+                return true;
+
+            var baseInfo = GetTileInfo(baseId);
+            if (baseInfo.Collision == TileCollisionType.Water && !hasSurfAbility)
+                return true;
+
+            return false;
+        }
+
+        void HandlePlayerDefeat()
+        {
+            Init();
+        }
+
+        void DrawHealthBar(Span<byte> fb)
+        {
+            const int startX = 4;
+            const int startY = 4;
+            const int spacing = 2;
+            const int heartWidth = 6;
+
+            for (int i = 0; i < maxHealth; i++)
+            {
+                int drawX = startX + i * (heartWidth + spacing);
+                DrawHeartSprite(fb, drawX, startY, i < currentHealth);
+            }
+        }
+
+        void DrawHeartSprite(Span<byte> fb, int dx, int dy, bool filled)
+        {
+            var sprite = filled ? HEART_FULL : HEART_EMPTY;
+            int height = sprite.GetLength(0);
+            int width = sprite.GetLength(1);
+
+            for (int y = 0; y < height; y++)
+            {
+                int ry = dy + y; if ((uint)ry >= MicroBoySpec.H) continue;
+                int row = ry * MicroBoySpec.W;
+                for (int x = 0; x < width; x++)
+                {
+                    int rx = dx + x; if ((uint)rx >= MicroBoySpec.W) continue;
+                    byte c = sprite[y, x];
+                    if (c != 0)
+                        fb[row + rx] = c;
+                }
+            }
+        }
+
+        static readonly byte[,] HEART_FULL =
+        {
+            {0, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, 0},
+            {COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG},
+            {COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG},
+            {0, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, 0},
+            {0, 0, COLOR_RUG, COLOR_RUG, 0, 0},
+        };
+
+        static readonly byte[,] HEART_EMPTY =
+        {
+            {0, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, 0},
+            {COLOR_PATH_LIGHT, 0, 0, 0, 0, COLOR_PATH_LIGHT},
+            {COLOR_PATH_LIGHT, 0, 0, 0, 0, COLOR_PATH_LIGHT},
+            {0, COLOR_PATH_LIGHT, 0, 0, COLOR_PATH_LIGHT, 0},
+            {0, 0, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, 0, 0},
+        };
 
         void DrawPlayer(Span<byte> fb, int dx, int dy)
         {
