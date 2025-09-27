@@ -78,10 +78,10 @@ namespace MicroBoyCart.Sample
                     pTileX = px / TILE_W;
                     pTileY = py / TILE_H;
 
-                    if (pendingWarp is { } warp)
+                    if (pendingWarp is { } warp2)
                     {
                         pendingWarp = null;
-                        ExecuteWarp(warp);
+                        ExecuteWarp(warp2);
                     }
                 }
                 return;
