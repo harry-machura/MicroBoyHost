@@ -4,18 +4,14 @@ using System.Collections.Generic;
 
 namespace MicroBoyCart.Sample
 {
-    // Mini-"Pokémon"-Cartridge: 8x8-Tiles, Grid-Movement, Kollision
     public sealed class MyPokemonLikeCart : ICartridge
     {
         public string Title => "MicroBoy Demo Map";
         public string Author => "Harry";
-
         public int AudioSampleRate => 44100;
         public int AudioChannelCount => 2;
 
-        // --- Spielfeld-Setup ---
         const int TILE_W = 8, TILE_H = 8;
-
         const byte TILE_GRASS_ID = 0;
         const byte TILE_PATH_ID = 1;
         const byte TILE_TREE_ID = 2;
@@ -29,21 +25,17 @@ namespace MicroBoyCart.Sample
 
         static readonly Dictionary<string, MapDefinition> Maps = BuildMaps();
 
-        // Spielerposition in Tile-Koordinaten
         int pTileX = 5, pTileY = 10;
-        int px, py;                  // Pixel-Position (für weiches Gleiten)
-        int targetPx, targetPy;      // Zielpixel beim Schritt
-        bool isMoving;               // läuft gerade ein Schritt?
-        int stepSpeedPx = 2;         // Pixel pro Frame (~120px/s bei 60 FPS)
+        int px, py;
+        int targetPx, targetPy;
+        bool isMoving;
+        int stepSpeedPx = 2;
         int maxHealth;
         int currentHealth;
         double damageCooldownTimer;
-        const double DamageCooldownDuration = 1.0; // Sekunden Unverwundbarkeit nach Schaden
-
-        // Richtung (0=unten,1=links,2=rechts,3=oben) für Sprite-Flip/Varianz
+        const double DamageCooldownDuration = 1.0;
         int dir;
 
-        // Einfache Audio-State-Maschine
         double audioPhase;
         double melodyTimer;
         int melodyIndex;
@@ -54,7 +46,27 @@ namespace MicroBoyCart.Sample
         WarpPoint? pendingWarp;
         bool hasSurfAbility;
 
+        // SAVE/LOAD FELDER
+        private double totalPlayTime;
+        private bool showSaveMessage;
+        private double saveMessageTimer;
+        private const double SaveMessageDuration = 2.0;
+        private string currentMessage = "GAME SAVED!";
+
         public void Init()
+        {
+            var saveData = SaveSystem.Load();
+            if (saveData != null)
+            {
+                LoadFromSaveData(saveData);
+            }
+            else
+            {
+                StartNewGame();
+            }
+        }
+
+        private void StartNewGame()
         {
             currentMapId = "overworld";
             currentMap = Maps[currentMapId];
@@ -63,35 +75,85 @@ namespace MicroBoyCart.Sample
             maxHealth = 6;
             currentHealth = maxHealth;
             damageCooldownTimer = 0;
-
+            totalPlayTime = 0;
             pTileX = 5;
             pTileY = 10;
-            // Initial auf Tile zentrieren
             px = pTileX * TILE_W;
             py = pTileY * TILE_H;
-            targetPx = px; targetPy = py;
+            targetPx = px;
+            targetPy = py;
             isMoving = false;
             dir = 0;
-
             audioPhase = 0;
             melodyTimer = 0;
             melodyIndex = 0;
+            showSaveMessage = false;
+            saveMessageTimer = 0;
+        }
+
+        private void LoadFromSaveData(GameSaveData data)
+        {
+            currentMapId = data.CurrentMapId;
+            currentMap = Maps.ContainsKey(currentMapId) ? Maps[currentMapId] : Maps["overworld"];
+            pTileX = Math.Clamp(data.PlayerTileX, 0, currentMap.Width - 1);
+            pTileY = Math.Clamp(data.PlayerTileY, 0, currentMap.Height - 1);
+            px = pTileX * TILE_W;
+            py = pTileY * TILE_H;
+            targetPx = px;
+            targetPy = py;
+            currentHealth = data.CurrentHealth;
+            maxHealth = data.MaxHealth;
+            hasSurfAbility = data.HasSurfAbility;
+            totalPlayTime = data.PlayTimeSeconds;
+            isMoving = false;
+            dir = 0;
+            pendingWarp = null;
+            damageCooldownTimer = 0;
+            audioPhase = 0;
+            melodyTimer = 0;
+            melodyIndex = 0;
+            showSaveMessage = false;
+            saveMessageTimer = 0;
         }
 
         public void Update(Input input, double dt)
         {
+            totalPlayTime += dt;
+
+            if (saveMessageTimer > 0)
+            {
+                saveMessageTimer = Math.Max(0, saveMessageTimer - dt);
+                if (saveMessageTimer == 0)
+                    showSaveMessage = false;
+            }
+
             if (damageCooldownTimer > 0)
             {
                 damageCooldownTimer = Math.Max(0, damageCooldownTimer - dt);
             }
 
-            if (input.IsDown(Buttons.A))
-                hasSurfAbility = true; // Debug: A schaltet Surf-Fähigkeit frei
+            if (!isMoving && input.IsDown(Buttons.Start))
+            {
+                SaveGame();
+                return;
+            }
 
-            // Falls wir gerade unterwegs sind -> zum Ziel gleiten
+            if (!isMoving && input.IsDown(Buttons.Select))
+            {
+                var saveData = SaveSystem.Load();
+                if (saveData != null)
+                {
+                    LoadFromSaveData(saveData);
+                    ShowMessage("GAME LOADED!");
+                }
+                return;
+            }
+
+            if (input.IsDown(Buttons.A))
+                hasSurfAbility = true;
+
             if (isMoving)
             {
-                // horizontale Annäherung
                 if (px < targetPx) px = Math.Min(targetPx, px + stepSpeedPx);
                 if (px > targetPx) px = Math.Max(targetPx, px - stepSpeedPx);
                 if (py < targetPy) py = Math.Min(targetPy, py + stepSpeedPx);
@@ -117,7 +179,6 @@ namespace MicroBoyCart.Sample
                 return;
             }
 
-            // Keine Bewegung aktiv -> Eingaben im Grid prüfen (tileweise)
             int nx = pTileX, ny = pTileY;
             if (input.IsDown(Buttons.Left)) { nx = pTileX - 1; dir = 1; }
             else if (input.IsDown(Buttons.Right)) { nx = pTileX + 1; dir = 2; }
@@ -126,7 +187,7 @@ namespace MicroBoyCart.Sample
             else
             {
                 EvaluateHazardState();
-                return; // keine Richtung gedrückt
+                return;
             }
 
             if (IsWalkable(nx, ny, out var warp))
@@ -143,6 +204,38 @@ namespace MicroBoyCart.Sample
             }
 
             EvaluateHazardState();
+        }
+
+        private void SaveGame()
+        {
+            var saveData = new GameSaveData
+            {
+                PlayerTileX = pTileX,
+                PlayerTileY = pTileY,
+                CurrentMapId = currentMapId,
+                CurrentHealth = currentHealth,
+                MaxHealth = maxHealth,
+                HasSurfAbility = hasSurfAbility,
+                PlayTimeSeconds = totalPlayTime,
+                SaveDate = DateTime.Now,
+                SaveVersion = 1
+            };
+
+            if (SaveSystem.Save(saveData))
+            {
+                ShowMessage("GAME SAVED!");
+            }
+            else
+            {
+                ShowMessage("SAVE FAILED!");
+            }
+        }
+
+        private void ShowMessage(string message)
+        {
+            currentMessage = message;
+            showSaveMessage = true;
+            saveMessageTimer = SaveMessageDuration;
         }
 
         bool IsWalkable(int tx, int ty, out WarpPoint warp)
@@ -218,22 +311,18 @@ namespace MicroBoyCart.Sample
             int mapPixelWidth = currentMap.Width * TILE_W;
             int mapPixelHeight = currentMap.Height * TILE_H;
 
-            // Kamera zentriert den Spieler (mit Clamping)
             int camX = px - MicroBoySpec.W / 2;
             int camY = py - MicroBoySpec.H / 2;
             camX = Math.Max(0, Math.Min(camX, mapPixelWidth - MicroBoySpec.W));
             camY = Math.Max(0, Math.Min(camY, mapPixelHeight - MicroBoySpec.H));
 
-            // Hintergrund löschen (Farbe 0)
             frame.Fill(0);
 
-            // Sichtbare Tiles berechnen
             int firstTileX = camX / TILE_W;
             int firstTileY = camY / TILE_H;
             int offX = -(camX % TILE_W);
             int offY = -(camY % TILE_H);
 
-            // Tiles zeichnen
             for (int ty = 0, my = firstTileY; my < currentMap.Height && ty < MicroBoySpec.H; my++, ty += TILE_H)
             {
                 int drawY = offY + ty;
@@ -250,15 +339,92 @@ namespace MicroBoyCart.Sample
                 }
             }
 
-            // Spieler (8x8) zeichnen – einfache 2-Frame „Animation“
             DrawPlayer(frame, px - camX, py - camY);
-
             DrawHealthBar(frame);
+
+            if (showSaveMessage)
+            {
+                DrawSaveMessage(frame);
+            }
         }
 
-        // --- Tileset: mehrere Tiles mit erweiterten Palettenindizes ---
+        private void DrawSaveMessage(Span<byte> frame)
+        {
+            const int boxWidth = 80;
+            const int boxHeight = 16;
+            const int boxX = (MicroBoySpec.W - boxWidth) / 2;
+            const int boxY = 20;
 
-        // Palette-Indizes für bessere Lesbarkeit
+            for (int y = 0; y < boxHeight; y++)
+            {
+                int ry = boxY + y;
+                if ((uint)ry >= MicroBoySpec.H) continue;
+                int row = ry * MicroBoySpec.W;
+
+                for (int x = 0; x < boxWidth; x++)
+                {
+                    int rx = boxX + x;
+                    if ((uint)rx >= MicroBoySpec.W) continue;
+
+                    if (y == 0 || y == boxHeight - 1 || x == 0 || x == boxWidth - 1)
+                        frame[row + rx] = COLOR_PATH_DARK;
+                    else
+                        frame[row + rx] = COLOR_PATH_LIGHT;
+                }
+            }
+
+            DrawText(frame, boxX + 8, boxY + 5, currentMessage);
+        }
+
+        private void DrawText(Span<byte> frame, int x, int y, string text)
+        {
+            int xOffset = 0;
+            foreach (char c in text)
+            {
+                DrawChar(frame, x + xOffset, y, c);
+                xOffset += 4;
+            }
+        }
+
+        private void DrawChar(Span<byte> frame, int x, int y, char c)
+        {
+            byte[,]? pattern = c switch
+            {
+                'G' => new byte[,] { { 1, 1, 1 }, { 1, 0, 0 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 1, 1 } },
+                'A' => new byte[,] { { 0, 1, 0 }, { 1, 0, 1 }, { 1, 1, 1 }, { 1, 0, 1 }, { 1, 0, 1 } },
+                'M' => new byte[,] { { 1, 0, 1 }, { 1, 1, 1 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 0, 1 } },
+                'E' => new byte[,] { { 1, 1, 1 }, { 1, 0, 0 }, { 1, 1, 0 }, { 1, 0, 0 }, { 1, 1, 1 } },
+                'S' => new byte[,] { { 1, 1, 1 }, { 1, 0, 0 }, { 1, 1, 1 }, { 0, 0, 1 }, { 1, 1, 1 } },
+                'V' => new byte[,] { { 1, 0, 1 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 0, 1 }, { 0, 1, 0 } },
+                'D' => new byte[,] { { 1, 1, 0 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 1, 0 } },
+                'L' => new byte[,] { { 1, 0, 0 }, { 1, 0, 0 }, { 1, 0, 0 }, { 1, 0, 0 }, { 1, 1, 1 } },
+                'O' => new byte[,] { { 0, 1, 0 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 0, 1 }, { 0, 1, 0 } },
+                'F' => new byte[,] { { 1, 1, 1 }, { 1, 0, 0 }, { 1, 1, 0 }, { 1, 0, 0 }, { 1, 0, 0 } },
+                'I' => new byte[,] { { 1, 1, 1 }, { 0, 1, 0 }, { 0, 1, 0 }, { 0, 1, 0 }, { 1, 1, 1 } },
+                '!' => new byte[,] { { 1, 0, 0 }, { 1, 0, 0 }, { 1, 0, 0 }, { 0, 0, 0 }, { 1, 0, 0 } },
+                ' ' => new byte[,] { { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 } },
+                _ => null
+            };
+
+            if (pattern == null) return;
+
+            for (int py = 0; py < 5; py++)
+            {
+                int ry = y + py;
+                if ((uint)ry >= MicroBoySpec.H) continue;
+                int row = ry * MicroBoySpec.W;
+
+                for (int px = 0; px < 3; px++)
+                {
+                    int rx = x + px;
+                    if ((uint)rx >= MicroBoySpec.W) continue;
+
+                    if (pattern[py, px] == 1)
+                        frame[row + rx] = COLOR_PATH_DARK;
+                }
+            }
+        }
+
         const byte COLOR_GRASS_DARK = 0;
         const byte COLOR_GRASS_MID = 1;
         const byte COLOR_GRASS_LIGHT = 2;
@@ -270,7 +436,7 @@ namespace MicroBoyCart.Sample
         const byte COLOR_STONE = 8;
         const byte COLOR_RUG = 9;
 
-        static readonly byte[,] TILE_GRASS = // feines Muster mit helleren Highlights
+        static readonly byte[,] TILE_GRASS =
         {
             {COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID},
             {COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT},
@@ -282,7 +448,7 @@ namespace MicroBoyCart.Sample
             {COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT},
         };
 
-        static readonly byte[,] TILE_PATH = // Weg mit hellen Platten und dunklen Rändern
+        static readonly byte[,] TILE_PATH =
         {
             {COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK},
             {COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK},
@@ -294,7 +460,7 @@ namespace MicroBoyCart.Sample
             {COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK},
         };
 
-        static readonly byte[,] TILE_TREE = // Baum/Wand mit Braun für Stamm
+        static readonly byte[,] TILE_TREE =
         {
             {COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK},
             {COLOR_GRASS_DARK, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_DARK},
@@ -411,10 +577,7 @@ namespace MicroBoyCart.Sample
         public void MixAudio(Span<float> buffer)
         {
             int channels = AudioChannelCount;
-            if (channels <= 0)
-            {
-                return;
-            }
+            if (channels <= 0) return;
 
             int samples = buffer.Length / channels;
             if (samples <= 0)
@@ -443,10 +606,7 @@ namespace MicroBoyCart.Sample
                 double phaseStep = twoPi * (freq + vibrato) / sampleRate;
 
                 audioPhase += phaseStep;
-                if (audioPhase >= twoPi)
-                {
-                    audioPhase -= twoPi;
-                }
+                if (audioPhase >= twoPi) audioPhase -= twoPi;
 
                 float sample = (float)(Math.Sin(audioPhase) * 0.18);
 
@@ -719,29 +879,21 @@ FFFFFFFFFFFFFFFF
 
         void EvaluateHazardState()
         {
-            if (currentMap is null)
-                return;
-
+            if (currentMap is null) return;
             if (currentHealth <= 0)
             {
                 HandlePlayerDefeat();
                 return;
             }
 
-            if (px < 0 || py < 0)
-                return;
+            if (px < 0 || py < 0) return;
 
             int tileX = px / TILE_W;
             int tileY = py / TILE_H;
 
-            if ((uint)tileX >= (uint)currentMap.Width || (uint)tileY >= (uint)currentMap.Height)
-                return;
-
-            if (!IsHazardTile(tileX, tileY))
-                return;
-
-            if (damageCooldownTimer > 0)
-                return;
+            if ((uint)tileX >= (uint)currentMap.Width || (uint)tileY >= (uint)currentMap.Height) return;
+            if (!IsHazardTile(tileX, tileY)) return;
+            if (damageCooldownTimer > 0) return;
 
             currentHealth = Math.Max(0, currentHealth - 1);
             damageCooldownTimer = DamageCooldownDuration;
@@ -755,8 +907,7 @@ FFFFFFFFFFFFFFFF
             byte overlayId = currentMap.GetOverlay(tileX, tileY);
             if (overlayId != TILE_NONE)
             {
-                if (overlayId == TILE_TALL_GRASS_ID)
-                    return true;
+                if (overlayId == TILE_TALL_GRASS_ID) return true;
 
                 var overlayInfo = GetTileInfo(overlayId);
                 if (overlayInfo.Collision == TileCollisionType.Water && !hasSurfAbility)
@@ -764,8 +915,7 @@ FFFFFFFFFFFFFFFF
             }
 
             byte baseId = currentMap.GetGround(tileX, tileY);
-            if (baseId == TILE_TALL_GRASS_ID)
-                return true;
+            if (baseId == TILE_TALL_GRASS_ID) return true;
 
             var baseInfo = GetTileInfo(baseId);
             if (baseInfo.Collision == TileCollisionType.Water && !hasSurfAbility)
@@ -776,7 +926,15 @@ FFFFFFFFFFFFFFFF
 
         void HandlePlayerDefeat()
         {
-            Init();
+            var saveData = SaveSystem.Load();
+            if (saveData != null)
+            {
+                LoadFromSaveData(saveData);
+            }
+            else
+            {
+                Init();
+            }
         }
 
         void DrawHealthBar(Span<byte> fb)
@@ -833,7 +991,6 @@ FFFFFFFFFFFFFFFF
 
         void DrawPlayer(Span<byte> fb, int dx, int dy)
         {
-            // Zwei ganz simple Frames (blinkender Körper)
             byte[,] f0 =
             {
                 {0,0,COLOR_PATH_DARK,COLOR_PATH_DARK,COLOR_PATH_DARK,COLOR_PATH_DARK,0,0},
