@@ -1,6 +1,9 @@
-﻿using MicroBoy;
+using MicroBoy;
 using System;
-using System.Collections.Generic;
+using MicroBoyCart.Sample.Audio;
+using MicroBoyCart.Sample.Gameplay;
+using MicroBoyCart.Sample.Maps;
+using MicroBoyCart.Sample.Rendering;
 
 namespace MicroBoyCart.Sample
 {
@@ -11,216 +14,84 @@ namespace MicroBoyCart.Sample
         public int AudioSampleRate => 44100;
         public int AudioChannelCount => 2;
 
-        const int TILE_W = 8, TILE_H = 8;
-        const byte TILE_GRASS_ID = 0;
-        const byte TILE_PATH_ID = 1;
-        const byte TILE_TREE_ID = 2;
-        const byte TILE_TALL_GRASS_ID = 3;
-        const byte TILE_WATER_ID = 4;
-        const byte TILE_DOOR_ID = 5;
-        const byte TILE_FLOOR_ID = 6;
-        const byte TILE_WALL_ID = 7;
-        const byte TILE_RUG_ID = 8;
-        const byte TILE_NONE = byte.MaxValue;
+        private readonly MapRepository mapRepository;
+        private readonly TileRules tileRules;
+        private readonly PlayerController playerController;
+        private readonly TileRenderer tileRenderer;
+        private readonly HudRenderer hudRenderer;
+        private readonly WalkingTheme walkingTheme;
 
-        static readonly Dictionary<string, MapDefinition> Maps = BuildMaps();
-
-        int pTileX = 5, pTileY = 10;
-        int px, py;
-        int targetPx, targetPy;
-        bool isMoving;
-        int stepSpeedPx = 2;
-        int maxHealth;
-        int currentHealth;
-        double damageCooldownTimer;
-        const double DamageCooldownDuration = 1.0;
-        int dir;
-
-        double audioPhase;
-        double melodyTimer;
-        int melodyIndex;
-        static readonly double[] Melody = { 220.0, 246.0, 262.0, 294.0, 330.0, 294.0, 262.0, 246.0 };
-
-        MapDefinition currentMap = null!;
-        string currentMapId = string.Empty;
-        WarpPoint? pendingWarp;
-        bool hasSurfAbility;
-
-        // SAVE/LOAD FELDER
-        private double totalPlayTime;
         private bool showSaveMessage;
         private double saveMessageTimer;
         private const double SaveMessageDuration = 2.0;
         private string currentMessage = "GAME SAVED!";
 
+        public MyPokemonLikeCart()
+        {
+            mapRepository = new MapRepository();
+            tileRules = new TileRules();
+            playerController = new PlayerController(mapRepository, tileRules);
+            tileRenderer = new TileRenderer();
+            hudRenderer = new HudRenderer();
+            walkingTheme = new WalkingTheme();
+
+            playerController.PlayerDefeated += HandlePlayerDefeat;
+        }
+
         public void Init()
         {
-            var saveData = SaveSystem.Load();
-            if (saveData != null)
-            {
-                LoadFromSaveData(saveData);
-            }
-            else
-            {
-                StartNewGame();
-            }
-        }
-
-        private void StartNewGame()
-        {
-            currentMapId = "overworld";
-            currentMap = Maps[currentMapId];
-            pendingWarp = null;
-            hasSurfAbility = false;
-            maxHealth = 6;
-            currentHealth = maxHealth;
-            damageCooldownTimer = 0;
-            totalPlayTime = 0;
-            pTileX = 5;
-            pTileY = 10;
-            px = pTileX * TILE_W;
-            py = pTileY * TILE_H;
-            targetPx = px;
-            targetPy = py;
-            isMoving = false;
-            dir = 0;
-            audioPhase = 0;
-            melodyTimer = 0;
-            melodyIndex = 0;
             showSaveMessage = false;
             saveMessageTimer = 0;
-        }
-
-        private void LoadFromSaveData(GameSaveData data)
-        {
-            currentMapId = data.CurrentMapId;
-            currentMap = Maps.ContainsKey(currentMapId) ? Maps[currentMapId] : Maps["overworld"];
-            pTileX = Math.Clamp(data.PlayerTileX, 0, currentMap.Width - 1);
-            pTileY = Math.Clamp(data.PlayerTileY, 0, currentMap.Height - 1);
-            px = pTileX * TILE_W;
-            py = pTileY * TILE_H;
-            targetPx = px;
-            targetPy = py;
-            currentHealth = data.CurrentHealth;
-            maxHealth = data.MaxHealth;
-            hasSurfAbility = data.HasSurfAbility;
-            totalPlayTime = data.PlayTimeSeconds;
-            isMoving = false;
-            dir = 0;
-            pendingWarp = null;
-            damageCooldownTimer = 0;
-            audioPhase = 0;
-            melodyTimer = 0;
-            melodyIndex = 0;
-            showSaveMessage = false;
-            saveMessageTimer = 0;
+            LoadOrStartNewGame();
         }
 
         public void Update(Input input, double dt)
         {
-            totalPlayTime += dt;
+            UpdateSaveMessage(dt);
 
-            if (saveMessageTimer > 0)
-            {
-                saveMessageTimer = Math.Max(0, saveMessageTimer - dt);
-                if (saveMessageTimer == 0)
-                    showSaveMessage = false;
-            }
-
-            if (damageCooldownTimer > 0)
-            {
-                damageCooldownTimer = Math.Max(0, damageCooldownTimer - dt);
-            }
-
-            if (!isMoving && input.IsDown(Buttons.Start))
+            if (!playerController.State.IsMoving && input.IsDown(Buttons.Start))
             {
                 SaveGame();
                 return;
             }
 
-            if (!isMoving && input.IsDown(Buttons.Select))
+            if (!playerController.State.IsMoving && input.IsDown(Buttons.Select))
             {
-                var saveData = SaveSystem.Load();
-                if (saveData != null)
-                {
-                    LoadFromSaveData(saveData);
-                    ShowMessage("GAME LOADED!");
-                }
+                LoadGameFromDisk();
                 return;
             }
 
-            if (input.IsDown(Buttons.A))
-                hasSurfAbility = true;
+            playerController.Update(input, dt);
+        }
 
-            if (isMoving)
+        public void Render(Span<byte> frame)
+        {
+            tileRenderer.Render(frame, playerController.CurrentMap, playerController.State);
+            hudRenderer.Render(frame, playerController.State, showSaveMessage, currentMessage);
+        }
+
+        public void MixAudio(Span<float> buffer)
+        {
+            walkingTheme.MixAudio(buffer, playerController.State.IsMoving, AudioSampleRate, AudioChannelCount);
+        }
+
+        private void LoadOrStartNewGame()
+        {
+            walkingTheme.Reset();
+            var saveData = SaveSystem.Load();
+            if (saveData != null)
             {
-                if (px < targetPx) px = Math.Min(targetPx, px + stepSpeedPx);
-                if (px > targetPx) px = Math.Max(targetPx, px - stepSpeedPx);
-                if (py < targetPy) py = Math.Min(targetPy, py + stepSpeedPx);
-                if (py > targetPy) py = Math.Max(targetPy, py - stepSpeedPx);
-
-                if (px == targetPx && py == targetPy)
-                {
-                    isMoving = false;
-                    pTileX = px / TILE_W;
-                    pTileY = py / TILE_H;
-
-                    if (pendingWarp is { } warp2)
-                    {
-                        pendingWarp = null;
-                        ExecuteWarp(warp2);
-                    }
-
-                    EvaluateHazardState();
-                    return;
-                }
-
-                EvaluateHazardState();
-                return;
-            }
-
-            int nx = pTileX, ny = pTileY;
-            if (input.IsDown(Buttons.Left)) { nx = pTileX - 1; dir = 1; }
-            else if (input.IsDown(Buttons.Right)) { nx = pTileX + 1; dir = 2; }
-            else if (input.IsDown(Buttons.Up)) { ny = pTileY - 1; dir = 3; }
-            else if (input.IsDown(Buttons.Down)) { ny = pTileY + 1; dir = 0; }
-            else
-            {
-                EvaluateHazardState();
-                return;
-            }
-
-            if (IsWalkable(nx, ny, out var warp))
-            {
-                pTileX = nx; pTileY = ny;
-                targetPx = pTileX * TILE_W;
-                targetPy = pTileY * TILE_H;
-                isMoving = true;
-                pendingWarp = warp.IsValid ? warp : null;
+                playerController.LoadFromSaveData(saveData);
             }
             else
             {
-                pendingWarp = null;
+                playerController.StartNewGame();
             }
-
-            EvaluateHazardState();
         }
 
         private void SaveGame()
         {
-            var saveData = new GameSaveData
-            {
-                PlayerTileX = pTileX,
-                PlayerTileY = pTileY,
-                CurrentMapId = currentMapId,
-                CurrentHealth = currentHealth,
-                MaxHealth = maxHealth,
-                HasSurfAbility = hasSurfAbility,
-                PlayTimeSeconds = totalPlayTime,
-                SaveDate = DateTime.Now,
-                SaveVersion = 1
-            };
-
+            var saveData = playerController.CreateSaveData();
             if (SaveSystem.Save(saveData))
             {
                 ShowMessage("GAME SAVED!");
@@ -231,6 +102,34 @@ namespace MicroBoyCart.Sample
             }
         }
 
+        private void LoadGameFromDisk()
+        {
+            var saveData = SaveSystem.Load();
+            if (saveData != null)
+            {
+                playerController.LoadFromSaveData(saveData);
+                walkingTheme.Reset();
+                ShowMessage("GAME LOADED!");
+            }
+        }
+
+        private void HandlePlayerDefeat()
+        {
+            var saveData = SaveSystem.Load();
+            if (saveData != null)
+            {
+                playerController.LoadFromSaveData(saveData);
+                ShowMessage("GAME LOADED!");
+            }
+            else
+            {
+                playerController.StartNewGame();
+                showSaveMessage = false;
+            }
+
+            walkingTheme.Reset();
+        }
+
         private void ShowMessage(string message)
         {
             currentMessage = message;
@@ -238,793 +137,14 @@ namespace MicroBoyCart.Sample
             saveMessageTimer = SaveMessageDuration;
         }
 
-        bool IsWalkable(int tx, int ty, out WarpPoint warp)
+        private void UpdateSaveMessage(double dt)
         {
-            warp = WarpPoint.None;
-            if (currentMap is null) return false;
-            if (tx < 0 || ty < 0 || tx >= currentMap.Width || ty >= currentMap.Height) return false;
-
-            byte overlayId = currentMap.GetOverlay(tx, ty);
-            if (overlayId != TILE_NONE)
+            if (saveMessageTimer > 0)
             {
-                var overlayInfo = GetTileInfo(overlayId);
-                switch (overlayInfo.Collision)
+                saveMessageTimer = Math.Max(0, saveMessageTimer - dt);
+                if (saveMessageTimer == 0)
                 {
-                    case TileCollisionType.Blocked:
-                        return false;
-                    case TileCollisionType.Water:
-                        return hasSurfAbility;
-                    case TileCollisionType.Warp:
-                        if (currentMap.TryGetWarp(tx, ty, out var foundWarp))
-                        {
-                            warp = foundWarp;
-                            return true;
-                        }
-                        return false;
-                }
-            }
-
-            byte baseId = currentMap.GetGround(tx, ty);
-            var baseInfo = GetTileInfo(baseId);
-            switch (baseInfo.Collision)
-            {
-                case TileCollisionType.Blocked:
-                    return false;
-                case TileCollisionType.Water:
-                    return hasSurfAbility;
-                case TileCollisionType.Warp:
-                    if (currentMap.TryGetWarp(tx, ty, out var foundWarp))
-                    {
-                        warp = foundWarp;
-                        return true;
-                    }
-                    return false;
-                default:
-                    return true;
-            }
-        }
-
-        void ExecuteWarp(WarpPoint warp)
-        {
-            if (!warp.IsValid) return;
-            if (!Maps.TryGetValue(warp.MapId, out var nextMap)) return;
-
-            currentMapId = warp.MapId;
-            currentMap = nextMap;
-
-            int destX = Math.Clamp(warp.TargetX, 0, currentMap.Width - 1);
-            int destY = Math.Clamp(warp.TargetY, 0, currentMap.Height - 1);
-
-            pTileX = destX;
-            pTileY = destY;
-            px = destX * TILE_W;
-            py = destY * TILE_H;
-            targetPx = px;
-            targetPy = py;
-            isMoving = false;
-        }
-
-        public void Render(Span<byte> frame)
-        {
-            if (currentMap is null) return;
-
-            int mapPixelWidth = currentMap.Width * TILE_W;
-            int mapPixelHeight = currentMap.Height * TILE_H;
-
-            int camX = px - MicroBoySpec.W / 2;
-            int camY = py - MicroBoySpec.H / 2;
-            camX = Math.Max(0, Math.Min(camX, mapPixelWidth - MicroBoySpec.W));
-            camY = Math.Max(0, Math.Min(camY, mapPixelHeight - MicroBoySpec.H));
-
-            frame.Fill(0);
-
-            int firstTileX = camX / TILE_W;
-            int firstTileY = camY / TILE_H;
-            int offX = -(camX % TILE_W);
-            int offY = -(camY % TILE_H);
-
-            for (int ty = 0, my = firstTileY; my < currentMap.Height && ty < MicroBoySpec.H; my++, ty += TILE_H)
-            {
-                int drawY = offY + ty;
-                if (drawY >= MicroBoySpec.H) break;
-
-                for (int tx = 0, mx = firstTileX; mx < currentMap.Width && tx < MicroBoySpec.W; mx++, tx += TILE_W)
-                {
-                    int drawX = offX + tx;
-                    if (drawX >= MicroBoySpec.W) break;
-
-                    byte baseId = currentMap.GetGround(mx, my);
-                    byte overlayId = currentMap.GetOverlay(mx, my);
-                    BlitTile(frame, drawX, drawY, baseId, overlayId);
-                }
-            }
-
-            DrawPlayer(frame, px - camX, py - camY);
-            DrawHealthBar(frame);
-
-            if (showSaveMessage)
-            {
-                DrawSaveMessage(frame);
-            }
-        }
-
-        private void DrawSaveMessage(Span<byte> frame)
-        {
-            const int boxWidth = 80;
-            const int boxHeight = 16;
-            const int boxX = (MicroBoySpec.W - boxWidth) / 2;
-            const int boxY = 20;
-
-            for (int y = 0; y < boxHeight; y++)
-            {
-                int ry = boxY + y;
-                if ((uint)ry >= MicroBoySpec.H) continue;
-                int row = ry * MicroBoySpec.W;
-
-                for (int x = 0; x < boxWidth; x++)
-                {
-                    int rx = boxX + x;
-                    if ((uint)rx >= MicroBoySpec.W) continue;
-
-                    if (y == 0 || y == boxHeight - 1 || x == 0 || x == boxWidth - 1)
-                        frame[row + rx] = COLOR_PATH_DARK;
-                    else
-                        frame[row + rx] = COLOR_PATH_LIGHT;
-                }
-            }
-
-            DrawText(frame, boxX + 8, boxY + 5, currentMessage);
-        }
-
-        private void DrawText(Span<byte> frame, int x, int y, string text)
-        {
-            int xOffset = 0;
-            foreach (char c in text)
-            {
-                DrawChar(frame, x + xOffset, y, c);
-                xOffset += 4;
-            }
-        }
-
-        private void DrawChar(Span<byte> frame, int x, int y, char c)
-        {
-            byte[,]? pattern = c switch
-            {
-                'G' => new byte[,] { { 1, 1, 1 }, { 1, 0, 0 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 1, 1 } },
-                'A' => new byte[,] { { 0, 1, 0 }, { 1, 0, 1 }, { 1, 1, 1 }, { 1, 0, 1 }, { 1, 0, 1 } },
-                'M' => new byte[,] { { 1, 0, 1 }, { 1, 1, 1 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 0, 1 } },
-                'E' => new byte[,] { { 1, 1, 1 }, { 1, 0, 0 }, { 1, 1, 0 }, { 1, 0, 0 }, { 1, 1, 1 } },
-                'S' => new byte[,] { { 1, 1, 1 }, { 1, 0, 0 }, { 1, 1, 1 }, { 0, 0, 1 }, { 1, 1, 1 } },
-                'V' => new byte[,] { { 1, 0, 1 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 0, 1 }, { 0, 1, 0 } },
-                'D' => new byte[,] { { 1, 1, 0 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 1, 0 } },
-                'L' => new byte[,] { { 1, 0, 0 }, { 1, 0, 0 }, { 1, 0, 0 }, { 1, 0, 0 }, { 1, 1, 1 } },
-                'O' => new byte[,] { { 0, 1, 0 }, { 1, 0, 1 }, { 1, 0, 1 }, { 1, 0, 1 }, { 0, 1, 0 } },
-                'F' => new byte[,] { { 1, 1, 1 }, { 1, 0, 0 }, { 1, 1, 0 }, { 1, 0, 0 }, { 1, 0, 0 } },
-                'I' => new byte[,] { { 1, 1, 1 }, { 0, 1, 0 }, { 0, 1, 0 }, { 0, 1, 0 }, { 1, 1, 1 } },
-                '!' => new byte[,] { { 1, 0, 0 }, { 1, 0, 0 }, { 1, 0, 0 }, { 0, 0, 0 }, { 1, 0, 0 } },
-                ' ' => new byte[,] { { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 } },
-                _ => null
-            };
-
-            if (pattern == null) return;
-
-            for (int py = 0; py < 5; py++)
-            {
-                int ry = y + py;
-                if ((uint)ry >= MicroBoySpec.H) continue;
-                int row = ry * MicroBoySpec.W;
-
-                for (int px = 0; px < 3; px++)
-                {
-                    int rx = x + px;
-                    if ((uint)rx >= MicroBoySpec.W) continue;
-
-                    if (pattern[py, px] == 1)
-                        frame[row + rx] = COLOR_PATH_DARK;
-                }
-            }
-        }
-
-        const byte COLOR_GRASS_DARK = 0;
-        const byte COLOR_GRASS_MID = 1;
-        const byte COLOR_GRASS_LIGHT = 2;
-        const byte COLOR_GRASS_HIGHLIGHT = 3;
-        const byte COLOR_PATH_LIGHT = 4;
-        const byte COLOR_PATH_DARK = 5;
-        const byte COLOR_WATER_DEEP = 6;
-        const byte COLOR_WATER_LIGHT = 7;
-        const byte COLOR_STONE = 8;
-        const byte COLOR_RUG = 9;
-
-        static readonly byte[,] TILE_GRASS =
-        {
-            {COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID},
-            {COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT},
-            {COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_HIGHLIGHT},
-            {COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT},
-            {COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID},
-            {COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT},
-            {COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_MID, COLOR_GRASS_DARK, COLOR_GRASS_MID, COLOR_GRASS_HIGHLIGHT},
-            {COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT},
-        };
-
-        static readonly byte[,] TILE_PATH =
-        {
-            {COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK},
-            {COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK},
-            {COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK},
-            {COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK},
-            {COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK},
-            {COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK},
-            {COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK},
-            {COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK},
-        };
-
-        static readonly byte[,] TILE_TREE =
-        {
-            {COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_MID, COLOR_GRASS_MID, COLOR_GRASS_MID, COLOR_GRASS_MID, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_MID, COLOR_GRASS_MID, COLOR_GRASS_MID, COLOR_GRASS_MID, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_DARK},
-            {COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK},
-        };
-
-        static readonly byte[,] TILE_TALL_GRASS =
-        {
-            {COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT},
-            {COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT},
-            {COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_MID, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT},
-            {COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT},
-            {COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT},
-            {COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT},
-            {COLOR_GRASS_LIGHT, COLOR_GRASS_MID, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_MID, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_MID, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT},
-            {COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT, COLOR_GRASS_HIGHLIGHT, COLOR_GRASS_LIGHT},
-        };
-
-        static readonly byte[,] TILE_WATER =
-        {
-            {COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP},
-            {COLOR_WATER_DEEP, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_DEEP, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_DEEP, COLOR_WATER_DEEP},
-            {COLOR_WATER_DEEP, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_DEEP},
-            {COLOR_WATER_DEEP, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_DEEP, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_DEEP, COLOR_WATER_DEEP},
-            {COLOR_WATER_DEEP, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_DEEP},
-            {COLOR_WATER_DEEP, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_DEEP, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_DEEP, COLOR_WATER_DEEP},
-            {COLOR_WATER_DEEP, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_LIGHT, COLOR_WATER_DEEP},
-            {COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP, COLOR_WATER_DEEP},
-        };
-
-        static readonly byte[,] TILE_DOOR =
-        {
-            {COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_PATH_DARK, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_DARK, COLOR_GRASS_DARK},
-            {COLOR_GRASS_DARK, COLOR_GRASS_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_GRASS_DARK, COLOR_GRASS_DARK},
-        };
-
-        static readonly byte[,] TILE_FLOOR =
-        {
-            {COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT},
-            {COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE},
-            {COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT},
-            {COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE},
-            {COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT},
-            {COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE},
-            {COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT},
-            {COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE, COLOR_PATH_LIGHT, COLOR_STONE},
-        };
-
-        static readonly byte[,] TILE_WALL =
-        {
-            {COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE},
-            {COLOR_STONE, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_STONE},
-            {COLOR_STONE, COLOR_PATH_DARK, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_PATH_DARK, COLOR_STONE},
-            {COLOR_STONE, COLOR_PATH_DARK, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_PATH_DARK, COLOR_STONE},
-            {COLOR_STONE, COLOR_PATH_DARK, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_PATH_DARK, COLOR_STONE},
-            {COLOR_STONE, COLOR_PATH_DARK, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_PATH_DARK, COLOR_STONE},
-            {COLOR_STONE, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_PATH_DARK, COLOR_STONE},
-            {COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE, COLOR_STONE},
-        };
-
-        static readonly byte[,] TILE_RUG =
-        {
-            {COLOR_PATH_DARK, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_PATH_DARK},
-            {COLOR_RUG, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_RUG},
-            {COLOR_RUG, COLOR_PATH_LIGHT, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_PATH_LIGHT, COLOR_RUG},
-            {COLOR_RUG, COLOR_PATH_LIGHT, COLOR_RUG, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_RUG, COLOR_PATH_LIGHT, COLOR_RUG},
-            {COLOR_RUG, COLOR_PATH_LIGHT, COLOR_RUG, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_RUG, COLOR_PATH_LIGHT, COLOR_RUG},
-            {COLOR_RUG, COLOR_PATH_LIGHT, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_PATH_LIGHT, COLOR_RUG},
-            {COLOR_RUG, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_RUG},
-            {COLOR_PATH_DARK, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_PATH_DARK},
-        };
-
-        void BlitTile(Span<byte> fb, int dx, int dy, byte baseId, byte overlayId)
-        {
-            DrawTileLayer(fb, dx, dy, baseId, transparent: false);
-            if (overlayId != TILE_NONE)
-                DrawTileLayer(fb, dx, dy, overlayId, transparent: true);
-        }
-
-        void DrawTileLayer(Span<byte> fb, int dx, int dy, byte tileId, bool transparent)
-        {
-            var tile = GetTileSprite(tileId);
-            for (int y = 0; y < TILE_H; y++)
-            {
-                int ry = dy + y; if ((uint)ry >= MicroBoySpec.H) continue;
-                int row = ry * MicroBoySpec.W;
-                for (int x = 0; x < TILE_W; x++)
-                {
-                    int rx = dx + x; if ((uint)rx >= MicroBoySpec.W) continue;
-                    byte c = tile[y, x];
-                    if (transparent && c == 0) continue;
-                    fb[row + rx] = c;
-                }
-            }
-        }
-
-        static byte[,] GetTileSprite(byte id)
-            => TileLookup.TryGetValue(id, out var tile) ? tile : TILE_GRASS;
-
-        static TileInfo GetTileInfo(byte id)
-            => TileRules.TryGetValue(id, out var info) ? info : DefaultTileInfo;
-
-        public void MixAudio(Span<float> buffer)
-        {
-            int channels = AudioChannelCount;
-            if (channels <= 0) return;
-
-            int samples = buffer.Length / channels;
-            if (samples <= 0)
-            {
-                buffer.Clear();
-                return;
-            }
-
-            double stepDuration = isMoving ? 0.18 : 0.32;
-            double vibratoSpeed = isMoving ? 8.0 : 5.0;
-            double vibratoDepth = isMoving ? 6.0 : 3.0;
-            int sampleRate = AudioSampleRate;
-            const double twoPi = Math.PI * 2.0;
-
-            for (int i = 0; i < samples; i++)
-            {
-                melodyTimer += 1.0 / sampleRate;
-                if (melodyTimer >= stepDuration)
-                {
-                    melodyTimer -= stepDuration;
-                    melodyIndex = (melodyIndex + 1) % Melody.Length;
-                }
-
-                double freq = Melody[melodyIndex];
-                double vibrato = Math.Sin((melodyTimer + i / (double)sampleRate) * twoPi * vibratoSpeed) * vibratoDepth;
-                double phaseStep = twoPi * (freq + vibrato) / sampleRate;
-
-                audioPhase += phaseStep;
-                if (audioPhase >= twoPi) audioPhase -= twoPi;
-
-                float sample = (float)(Math.Sin(audioPhase) * 0.18);
-
-                int baseIndex = i * channels;
-                for (int ch = 0; ch < channels; ch++)
-                {
-                    buffer[baseIndex + ch] = sample;
-                }
-            }
-        }
-
-        static readonly Dictionary<byte, byte[,]> TileLookup = new()
-        {
-            [TILE_GRASS_ID] = TILE_GRASS,
-            [TILE_PATH_ID] = TILE_PATH,
-            [TILE_TREE_ID] = TILE_TREE,
-            [TILE_TALL_GRASS_ID] = TILE_TALL_GRASS,
-            [TILE_WATER_ID] = TILE_WATER,
-            [TILE_DOOR_ID] = TILE_DOOR,
-            [TILE_FLOOR_ID] = TILE_FLOOR,
-            [TILE_WALL_ID] = TILE_WALL,
-            [TILE_RUG_ID] = TILE_RUG,
-        };
-
-        static readonly TileInfo DefaultTileInfo = new(TileCollisionType.Walkable);
-
-        static readonly Dictionary<byte, TileInfo> TileRules = new()
-        {
-            [TILE_GRASS_ID] = new TileInfo(TileCollisionType.Walkable),
-            [TILE_PATH_ID] = new TileInfo(TileCollisionType.Walkable),
-            [TILE_TREE_ID] = new TileInfo(TileCollisionType.Blocked),
-            [TILE_TALL_GRASS_ID] = new TileInfo(TileCollisionType.Walkable),
-            [TILE_WATER_ID] = new TileInfo(TileCollisionType.Water),
-            [TILE_DOOR_ID] = new TileInfo(TileCollisionType.Warp),
-            [TILE_FLOOR_ID] = new TileInfo(TileCollisionType.Walkable),
-            [TILE_WALL_ID] = new TileInfo(TileCollisionType.Blocked),
-            [TILE_RUG_ID] = new TileInfo(TileCollisionType.Walkable),
-        };
-
-        static Dictionary<string, MapDefinition> BuildMaps()
-        {
-            var baseLegend = new Dictionary<char, byte>
-            {
-                ['G'] = TILE_GRASS_ID,
-                ['P'] = TILE_PATH_ID,
-                ['H'] = TILE_TALL_GRASS_ID,
-                ['W'] = TILE_WATER_ID,
-                ['F'] = TILE_FLOOR_ID,
-            };
-
-            var overlayLegend = new Dictionary<char, byte>
-            {
-                ['T'] = TILE_TREE_ID,
-                ['t'] = TILE_TALL_GRASS_ID,
-                ['D'] = TILE_DOOR_ID,
-                ['#'] = TILE_WALL_ID,
-                ['r'] = TILE_RUG_ID,
-            };
-
-            const string OverworldGroundData = """
-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGPPPPPPPPPPPPPPPPPPPPPPPPPPPPGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGHHHHHHHHHGGGGGGGGGGGGGGGGGGG
-GGGGHHHHHHHHHGGGGGGGGGGGGGGGGGGG
-GGGGHHHHHHHHHGGGGGGGGGGGGGGGGGGG
-GGGGHHHHHHHHHGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGPPPPPPPPPPPPPPPPGGGGGGGG
-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGGGGGGGGGGGGGWWWWWWWWGGGG
-GGGGGGGGGGGGGGGGGGGGWWWWWWWWGGGG
-GGGGGGGGGGGGGGGGGGGGWWWWWWWWGGGG
-GGGGGGGGGGGGGGGGGGGGWWWWWWWWGGGG
-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG
-""";
-
-            const string OverworldOverlayData = """
-TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-T...............T..............T
-T...............T..............T
-T...............T..............T
-T...............T..............T
-T...............T..............T
-T...............T.......D......T
-T...............T..............T
-T...............T..............T
-T...............T..............T
-T...ttttttttt..................T
-T...ttttttttt..................T
-T...ttttttttt..................T
-T...ttttttttt..................T
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-T..............................T
-TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
-""";
-
-            const string HouseGroundData = """
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-FFFFFFFFFFFFFFFF
-""";
-
-            const string HouseOverlayData = """
-################
-#..............#
-#..............#
-#..............#
-#...rrrrrrrr...#
-#...rrrrrrrr...#
-#...rrrrrrrr...#
-#...rrrrrrrr...#
-#..............#
-#..............#
-#..............#
-#..............#
-#..............#
-#..............#
-#..............#
-########D#######
-""";
-
-            return new Dictionary<string, MapDefinition>
-            {
-                ["overworld"] = new MapDefinition(
-                    ParseLayer(OverworldGroundData, baseLegend),
-                    ParseLayer(OverworldOverlayData, overlayLegend, TILE_NONE),
-                    new Dictionary<(int x, int y), WarpPoint>
-                    {
-                        [(24, 10)] = new WarpPoint("house", 8, 14),
-                    }),
-                ["house"] = new MapDefinition(
-                    ParseLayer(HouseGroundData, baseLegend),
-                    ParseLayer(HouseOverlayData, overlayLegend, TILE_NONE),
-                    new Dictionary<(int x, int y), WarpPoint>
-                    {
-                        [(8, 15)] = new WarpPoint("overworld", 24, 11),
-                    }),
-            };
-        }
-
-        static byte[,] ParseLayer(string data, Dictionary<char, byte> legend, byte? defaultValue = null)
-        {
-            var rows = data.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            if (rows.Length == 0)
-                throw new InvalidOperationException("Keine Layerdaten vorhanden.");
-
-            int width = rows[0].TrimEnd('\r').Length;
-            var result = new byte[rows.Length, width];
-
-            for (int y = 0; y < rows.Length; y++)
-            {
-                var row = rows[y].TrimEnd('\r');
-                if (row.Length != width)
-                    throw new InvalidOperationException("Uneinheitliche Zeilenlänge in den Map-Daten.");
-
-                for (int x = 0; x < width; x++)
-                {
-                    char ch = row[x];
-                    if (legend.TryGetValue(ch, out var id))
-                    {
-                        result[y, x] = id;
-                    }
-                    else if (defaultValue.HasValue)
-                    {
-                        result[y, x] = defaultValue.Value;
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException($"Unbekanntes Tile-Zeichen '{ch}'.");
-                    }
-                }
-            }
-
-            return result;
-        }
-
-        sealed class MapDefinition
-        {
-            readonly byte[,] ground;
-            readonly byte[,] overlay;
-            readonly Dictionary<(int x, int y), WarpPoint> warps;
-
-            public MapDefinition(byte[,] ground, byte[,] overlay, Dictionary<(int x, int y), WarpPoint> warps)
-            {
-                if (ground.GetLength(0) != overlay.GetLength(0) || ground.GetLength(1) != overlay.GetLength(1))
-                    throw new ArgumentException("Layer-Größen stimmen nicht überein.", nameof(overlay));
-
-                this.ground = ground;
-                this.overlay = overlay;
-                this.warps = warps;
-            }
-
-            public int Width => ground.GetLength(1);
-            public int Height => ground.GetLength(0);
-
-            public byte GetGround(int x, int y) => ground[y, x];
-            public byte GetOverlay(int x, int y) => overlay[y, x];
-
-            public bool TryGetWarp(int x, int y, out WarpPoint warp)
-            {
-                if (warps.TryGetValue((x, y), out warp))
-                    return true;
-
-                warp = WarpPoint.None;
-                return false;
-            }
-        }
-
-        readonly record struct WarpPoint(string MapId, int TargetX, int TargetY)
-        {
-            public bool IsValid => !string.IsNullOrEmpty(MapId);
-            public static WarpPoint None => new(string.Empty, 0, 0);
-        }
-
-        enum TileCollisionType
-        {
-            Walkable,
-            Blocked,
-            Water,
-            Warp,
-        }
-
-        readonly record struct TileInfo(TileCollisionType Collision);
-
-        void EvaluateHazardState()
-        {
-            if (currentMap is null) return;
-            if (currentHealth <= 0)
-            {
-                HandlePlayerDefeat();
-                return;
-            }
-
-            if (px < 0 || py < 0) return;
-
-            int tileX = px / TILE_W;
-            int tileY = py / TILE_H;
-
-            if ((uint)tileX >= (uint)currentMap.Width || (uint)tileY >= (uint)currentMap.Height) return;
-            if (!IsHazardTile(tileX, tileY)) return;
-            if (damageCooldownTimer > 0) return;
-
-            currentHealth = Math.Max(0, currentHealth - 1);
-            damageCooldownTimer = DamageCooldownDuration;
-
-            if (currentHealth <= 0)
-                HandlePlayerDefeat();
-        }
-
-        bool IsHazardTile(int tileX, int tileY)
-        {
-            byte overlayId = currentMap.GetOverlay(tileX, tileY);
-            if (overlayId != TILE_NONE)
-            {
-                if (overlayId == TILE_TALL_GRASS_ID) return true;
-
-                var overlayInfo = GetTileInfo(overlayId);
-                if (overlayInfo.Collision == TileCollisionType.Water && !hasSurfAbility)
-                    return true;
-            }
-
-            byte baseId = currentMap.GetGround(tileX, tileY);
-            if (baseId == TILE_TALL_GRASS_ID) return true;
-
-            var baseInfo = GetTileInfo(baseId);
-            if (baseInfo.Collision == TileCollisionType.Water && !hasSurfAbility)
-                return true;
-
-            return false;
-        }
-
-        void HandlePlayerDefeat()
-        {
-            var saveData = SaveSystem.Load();
-            if (saveData != null)
-            {
-                LoadFromSaveData(saveData);
-            }
-            else
-            {
-                Init();
-            }
-        }
-
-        void DrawHealthBar(Span<byte> fb)
-        {
-            const int startX = 4;
-            const int startY = 4;
-            const int spacing = 2;
-            const int heartWidth = 6;
-
-            for (int i = 0; i < maxHealth; i++)
-            {
-                int drawX = startX + i * (heartWidth + spacing);
-                DrawHeartSprite(fb, drawX, startY, i < currentHealth);
-            }
-        }
-
-        void DrawHeartSprite(Span<byte> fb, int dx, int dy, bool filled)
-        {
-            var sprite = filled ? HEART_FULL : HEART_EMPTY;
-            int height = sprite.GetLength(0);
-            int width = sprite.GetLength(1);
-
-            for (int y = 0; y < height; y++)
-            {
-                int ry = dy + y; if ((uint)ry >= MicroBoySpec.H) continue;
-                int row = ry * MicroBoySpec.W;
-                for (int x = 0; x < width; x++)
-                {
-                    int rx = dx + x; if ((uint)rx >= MicroBoySpec.W) continue;
-                    byte c = sprite[y, x];
-                    if (c != 0)
-                        fb[row + rx] = c;
-                }
-            }
-        }
-
-        static readonly byte[,] HEART_FULL =
-        {
-            {0, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, 0},
-            {COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG},
-            {COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG},
-            {0, COLOR_RUG, COLOR_RUG, COLOR_RUG, COLOR_RUG, 0},
-            {0, 0, COLOR_RUG, COLOR_RUG, 0, 0},
-        };
-
-        static readonly byte[,] HEART_EMPTY =
-        {
-            {0, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, 0},
-            {COLOR_PATH_LIGHT, 0, 0, 0, 0, COLOR_PATH_LIGHT},
-            {COLOR_PATH_LIGHT, 0, 0, 0, 0, COLOR_PATH_LIGHT},
-            {0, COLOR_PATH_LIGHT, 0, 0, COLOR_PATH_LIGHT, 0},
-            {0, 0, COLOR_PATH_LIGHT, COLOR_PATH_LIGHT, 0, 0},
-        };
-
-        void DrawPlayer(Span<byte> fb, int dx, int dy)
-        {
-            byte[,] f0 =
-            {
-                {0,0,COLOR_PATH_DARK,COLOR_PATH_DARK,COLOR_PATH_DARK,COLOR_PATH_DARK,0,0},
-                {0,COLOR_PATH_DARK,COLOR_PATH_LIGHT,COLOR_PATH_LIGHT,COLOR_PATH_LIGHT,COLOR_PATH_LIGHT,COLOR_PATH_DARK,0},
-                {COLOR_PATH_DARK,COLOR_PATH_LIGHT,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_PATH_LIGHT,COLOR_PATH_DARK},
-                {COLOR_PATH_DARK,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_PATH_DARK},
-                {0,COLOR_PATH_DARK,COLOR_RUG,COLOR_PATH_DARK,COLOR_PATH_DARK,COLOR_RUG,COLOR_PATH_DARK,0},
-                {0,COLOR_PATH_DARK,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_PATH_DARK,0},
-                {0,COLOR_PATH_DARK,COLOR_STONE,COLOR_STONE,COLOR_STONE,COLOR_STONE,COLOR_PATH_DARK,0},
-                {0,0,COLOR_PATH_DARK,COLOR_PATH_DARK,COLOR_PATH_DARK,COLOR_PATH_DARK,0,0},
-            };
-            byte[,] f1 =
-            {
-                {0,0,COLOR_PATH_DARK,COLOR_PATH_DARK,COLOR_PATH_DARK,COLOR_PATH_DARK,0,0},
-                {0,COLOR_PATH_DARK,COLOR_PATH_LIGHT,COLOR_PATH_LIGHT,COLOR_PATH_LIGHT,COLOR_PATH_LIGHT,COLOR_PATH_DARK,0},
-                {COLOR_PATH_DARK,COLOR_PATH_LIGHT,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_PATH_LIGHT,COLOR_PATH_DARK},
-                {COLOR_PATH_DARK,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_PATH_DARK},
-                {0,COLOR_PATH_DARK,COLOR_RUG,COLOR_PATH_DARK,COLOR_PATH_DARK,COLOR_RUG,COLOR_PATH_DARK,0},
-                {0,COLOR_PATH_DARK,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_RUG,COLOR_PATH_DARK,0},
-                {0,0,COLOR_PATH_DARK,COLOR_STONE,COLOR_STONE,COLOR_PATH_DARK,0,0},
-                {0,COLOR_PATH_DARK,0,0,0,0,COLOR_PATH_DARK,0},
-            };
-
-            var sprite = ((px + py) / 8 % 2 == 0) ? f0 : f1;
-
-            for (int y = 0; y < 8; y++)
-            {
-                int ry = dy + y; if ((uint)ry >= MicroBoySpec.H) continue;
-                int row = ry * MicroBoySpec.W;
-                for (int x = 0; x < 8; x++)
-                {
-                    int rx = dx + x; if ((uint)rx >= MicroBoySpec.W) continue;
-                    byte c = sprite[y, x];
-                    if (c != 0) fb[row + rx] = c;
+                    showSaveMessage = false;
                 }
             }
         }
