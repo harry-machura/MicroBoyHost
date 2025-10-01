@@ -63,7 +63,7 @@ public sealed class NpcRepository
             new NpcDefinition(
                 id: "guard",
                 name: "TOWN GUARD",
-                tileX: 23,
+                tileX: 20,
                 tileY: 10,
                 mapId: "overworld",
                 dialogPages: new[]
