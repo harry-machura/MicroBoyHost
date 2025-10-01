@@ -4,6 +4,7 @@ using MicroBoyCart.Sample.Audio;
 using MicroBoyCart.Sample.Gameplay;
 using MicroBoyCart.Sample.Maps;
 using MicroBoyCart.Sample.Rendering;
+using MicroBoyCart.Sample.UI;
 
 namespace MicroBoyCart.Sample
 {
@@ -20,6 +21,10 @@ namespace MicroBoyCart.Sample
         private readonly TileRenderer tileRenderer;
         private readonly HudRenderer hudRenderer;
         private readonly WalkingTheme walkingTheme;
+        private readonly PauseMenuState pauseMenuState;
+        private readonly PauseMenuRenderer pauseMenuRenderer;
+
+        private Buttons previousButtons;
 
         private bool showSaveMessage;
         private double saveMessageTimer;
@@ -34,6 +39,8 @@ namespace MicroBoyCart.Sample
             tileRenderer = new TileRenderer();
             hudRenderer = new HudRenderer();
             walkingTheme = new WalkingTheme();
+            pauseMenuState = new PauseMenuState();
+            pauseMenuRenderer = new PauseMenuRenderer();
 
             playerController.PlayerDefeated += HandlePlayerDefeat;
         }
@@ -42,6 +49,8 @@ namespace MicroBoyCart.Sample
         {
             showSaveMessage = false;
             saveMessageTimer = 0;
+            pauseMenuState.Close();
+            previousButtons = Buttons.None;
             LoadOrStartNewGame();
         }
 
@@ -49,25 +58,42 @@ namespace MicroBoyCart.Sample
         {
             UpdateSaveMessage(dt);
 
-            if (!playerController.State.IsMoving && input.IsDown(Buttons.Start))
+            bool startPressed = input.IsDown(Buttons.Start) && (previousButtons & Buttons.Start) == 0;
+            if (startPressed)
             {
-                SaveGame();
+                if (pauseMenuState.IsOpen)
+                {
+                    pauseMenuState.Close();
+                }
+                else if (!playerController.State.IsMoving)
+                {
+                    pauseMenuState.Open();
+                }
+            }
+
+            if (pauseMenuState.IsOpen)
+            {
+                HandlePauseMenuInput(input);
+                previousButtons = input.Buttons;
                 return;
             }
 
-            if (!playerController.State.IsMoving && input.IsDown(Buttons.Select))
+            if (!playerController.State.IsMoving && input.IsDown(Buttons.Select) && (previousButtons & Buttons.Select) == 0)
             {
                 LoadGameFromDisk();
+                previousButtons = input.Buttons;
                 return;
             }
 
             playerController.Update(input, dt);
+            previousButtons = input.Buttons;
         }
 
         public void Render(Span<byte> frame)
         {
             tileRenderer.Render(frame, playerController.CurrentMap, playerController.State);
             hudRenderer.Render(frame, playerController.State, showSaveMessage, currentMessage);
+            pauseMenuRenderer.Render(frame, pauseMenuState);
         }
 
         public void MixAudio(Span<float> buffer)
@@ -147,6 +173,45 @@ namespace MicroBoyCart.Sample
                     showSaveMessage = false;
                 }
             }
+        }
+
+        private void HandlePauseMenuInput(Input input)
+        {
+            if (input.IsDown(Buttons.Down) && (previousButtons & Buttons.Down) == 0)
+            {
+                pauseMenuState.MoveNext();
+            }
+            else if (input.IsDown(Buttons.Up) && (previousButtons & Buttons.Up) == 0)
+            {
+                pauseMenuState.MovePrevious();
+            }
+
+            if (input.IsDown(Buttons.B) && (previousButtons & Buttons.B) == 0)
+            {
+                pauseMenuState.Close();
+                return;
+            }
+
+            if (input.IsDown(Buttons.A) && (previousButtons & Buttons.A) == 0)
+            {
+                if (pauseMenuState.IsSaveSelected())
+                {
+                    SaveGame();
+                }
+                else if (pauseMenuState.IsSettingsSelected())
+                {
+                    HandleSettingsSelection();
+                }
+                else if (pauseMenuState.IsResumeSelected())
+                {
+                    pauseMenuState.Close();
+                }
+            }
+        }
+
+        private void HandleSettingsSelection()
+        {
+            ShowMessage("TODO SETTINGS MENU");
         }
     }
 }
